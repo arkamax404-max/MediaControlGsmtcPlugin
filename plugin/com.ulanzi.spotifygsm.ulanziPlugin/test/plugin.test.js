@@ -8,11 +8,15 @@ import {
   DEFAULT_PROGRESS_SETTINGS,
   SpotifyGSMTCPlugin,
   actionFromEvent,
+  centeredTextPlacement,
   escapeXml,
   extrapolatePosition,
+  formatProgressTime,
   formatRemaining,
+  nextProgressMode,
   normalizeBridgeState,
   normalizeProgressSettings,
+  progressTextLayout,
   renderProgressSvg,
   svgDataUri,
 } from "../src/plugin.js";
@@ -115,6 +119,19 @@ test("formats remaining time with ceil and hour support", () => {
   assert.equal(formatRemaining(3661), "1:01:01");
 });
 
+test("cycles progress modes and formats each mode with its rounding semantics", () => {
+  assert.equal(nextProgressMode("remaining"), "elapsed");
+  assert.equal(nextProgressMode("elapsed"), "total");
+  assert.equal(nextProgressMode("total"), "remaining");
+  assert.equal(nextProgressMode(undefined), "elapsed");
+
+  assert.equal(formatProgressTime("remaining", 60.9, 3661.2), "1:00:01");
+  assert.equal(formatProgressTime("elapsed", 60.9, 3661.2), "1:00");
+  assert.equal(formatProgressTime("total", 60.9, 3661.2), "1:01:02");
+  assert.equal(formatProgressTime("elapsed", 4000, 3661.2), "1:01:01");
+  assert.equal(formatProgressTime("remaining", -1, 65), "1:05");
+});
+
 test("builds secure 196px circular SVG and data URI", () => {
   const svg = renderProgressSvg({
     progress: 0.5,
@@ -130,6 +147,222 @@ test("builds secure 196px circular SVG and data URI", () => {
   const uri = svgDataUri(svg);
   assert.match(uri, /^data:image\/svg\+xml;base64,/);
   assert.equal(Buffer.from(uri.split(",")[1], "base64").toString("utf8"), svg);
+});
+
+test("sizes duration labels within the padded circle chord at default and max stroke", () => {
+  const expectedSizes = {
+    14: { "3:02": 42, "0:00": 42, "10:00": 42, "59:59": 42,
+      "1:00:00": 32, "12:34:56": 28 },
+    30: { "3:02": 42, "0:00": 42, "10:00": 36, "59:59": 36,
+      "1:00:00": 28, "12:34:56": 24 },
+  };
+
+  for (const strokeWidth of [14, 30]) {
+    for (const [text, expectedFontSize] of Object.entries(expectedSizes[strokeWidth])) {
+      const layout = progressTextLayout(text, strokeWidth);
+      assert.equal(layout.fontSize, expectedFontSize, `${text} at stroke ${strokeWidth}`);
+      assert.ok(layout.renderedWidth <= layout.maxWidth, `${text} fits stroke ${strokeWidth}`);
+      assert.equal(layout.constrained, false);
+    }
+  }
+  assert.deepEqual(progressTextLayout("12:34:56", 99), progressTextLayout("12:34:56", 30));
+});
+
+test("uses deterministic production sizing and constrains impossible hour labels", () => {
+  const first = renderProgressSvg({ text: "12:34:56", settings: { strokeWidth: 30 } });
+  const second = renderProgressSvg({ text: "12:34:56", settings: { strokeWidth: 30 } });
+  assert.equal(first, second);
+  assert.match(first, /font-size="24"/);
+  assert.ok(!first.includes("textLength="));
+
+  const extreme = "123456789012345678901234567890:00:00";
+  const layout = progressTextLayout(extreme, 30);
+  const svg = renderProgressSvg({ text: extreme, settings: { strokeWidth: 30 } });
+  assert.equal(layout.fontSize, 16);
+  assert.equal(layout.constrained, true);
+  assert.equal(layout.renderedWidth, layout.maxWidth);
+  assert.match(svg, /font-size="16"[^>]*textLength="[\d.]+" lengthAdjust="spacingAndGlyphs"/);
+});
+
+test("centers progress labels with canvas alignment and measured glyph bounds", () => {
+  const context = {
+    measureText(text) {
+      assert.ok(["3:02", "0:00", "12:34:56"].includes(text));
+      return this.font.includes("28px")
+        ? { actualBoundingBoxAscent: 21, actualBoundingBoxDescent: 6 }
+        : { actualBoundingBoxAscent: 31, actualBoundingBoxDescent: 9 };
+    },
+  };
+
+  for (const [text, fontSize, baseline] of [
+    ["3:02", 42, 109], ["0:00", 42, 109], ["12:34:56", 28, 105.5],
+  ]) {
+    const svg = renderProgressSvg({ text, textContext: context });
+    assert.match(svg, new RegExp(`<text x="98" y="${baseline}"[^>]*font-size="${fontSize}"`));
+  }
+  assert.equal(context.textAlign, "center");
+  assert.equal(context.textBaseline, "alphabetic");
+  assert.equal(context.font, "700 28px Arial, sans-serif");
+});
+
+test("uses a deterministic em-box baseline for production and unusable glyph bounds", () => {
+  const productionSvg = renderProgressSvg({ text: "3:02" });
+  assert.match(productionSvg, /<text x="98" y="110\.6"/);
+
+  for (const metrics of [
+    { width: 84 },
+    { actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 },
+    { actualBoundingBoxAscent: -1, actualBoundingBoxDescent: 9 },
+  ]) {
+    const context = { measureText: () => metrics };
+    assert.deepEqual(centeredTextPlacement(context, "0:00", 42), { x: 98, y: 110.6 });
+  }
+  assert.match(productionSvg, /text-anchor="middle"/);
+  assert.ok(!productionSvg.includes("dominant-baseline"));
+});
+
+test("cycles progress contexts independently with immediate local-only renders", async () => {
+  const sdk = createSdk();
+  let requests = 0;
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async () => { requests += 1; throw new Error("unexpected request"); },
+    now: () => 5000,
+  });
+  const settings = normalizeProgressSettings();
+  plugin.contexts.set("one", { action: "progress", active: true, settings, mode: "remaining" });
+  plugin.contexts.set("two", { action: "progress", active: true, settings, mode: "remaining" });
+  plugin.lastState = { online: true, available: true, timelineAvailable: true,
+    isPlaying: true, positionSeconds: 60.9, durationSeconds: 125.4,
+    playbackRate: 1, positionUpdatedAt: 5000 };
+  plugin.render("one", "progress", plugin.lastState, true);
+  plugin.render("two", "progress", plugin.lastState, true);
+  const seededRenders = sdk.calls.length;
+  plugin.rendered.delete("one");
+  plugin.render("one", "progress", plugin.lastState);
+  assert.equal(sdk.calls.length, seededRenders, "normal advancing render is throttled");
+
+  const renderedSvg = () => Buffer.from(
+    sdk.calls.at(-1)[2].split(",")[1], "base64",
+  ).toString("utf8");
+  const arcs = [];
+  for (const [mode, text] of [["elapsed", "1:00"], ["total", "2:06"], ["remaining", "1:05"]]) {
+    const rendersBefore = sdk.calls.length;
+    assert.equal(await plugin.run({ context: "one" }), true);
+    assert.equal(plugin.entry("one").mode, mode);
+    assert.equal(sdk.calls.length, rendersBefore + 1);
+    const svg = renderedSvg();
+    assert.match(svg, new RegExp(`>${text}</text>`));
+    arcs.push(svg.match(/stroke-dasharray="([^"]+)"/)?.[1]);
+  }
+  assert.ok(arcs[0]);
+  assert.deepEqual(arcs, [arcs[0], arcs[0], arcs[0]]);
+  assert.equal(plugin.entry("two").mode, "remaining");
+  assert.equal(await plugin.run({ context: "two" }), true);
+  assert.equal(plugin.entry("two").mode, "elapsed");
+  assert.equal(plugin.entry("one").mode, "remaining");
+  assert.equal(requests, 0);
+  assert.equal(sdk.calls.filter(([type]) => type === "settings").length, 0);
+});
+
+test("keeps total text stable while one-second animation advances the ring", () => {
+  const sdk = createSdk();
+  let clock = 5000;
+  let nextId = 0;
+  const timers = new Map();
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    now: () => clock,
+    setIntervalImpl(fn, ms) { const id = ++nextId; timers.set(id, { fn, ms }); return id; },
+    clearIntervalImpl(id) { timers.delete(id); },
+  });
+  plugin.contexts.set("progress", {
+    action: "progress", active: true, settings: normalizeProgressSettings(), mode: "total",
+  });
+  plugin.lastState = { online: true, available: true, timelineAvailable: true,
+    isPlaying: true, positionSeconds: 8, durationSeconds: 10,
+    playbackRate: 1, positionUpdatedAt: clock };
+
+  plugin.render("progress", "progress", plugin.lastState, true);
+  const first = Buffer.from(sdk.calls.at(-1)[2].split(",")[1], "base64").toString("utf8");
+  plugin.manageAnimation();
+  assert.equal(timers.size, 1);
+  const timerId = plugin.animationTimer;
+  const timer = timers.get(timerId);
+  assert.equal(timer.ms, ANIMATION_INTERVAL_MS);
+  clock += ANIMATION_INTERVAL_MS;
+  timer.fn();
+  const second = Buffer.from(sdk.calls.at(-1)[2].split(",")[1], "base64").toString("utf8");
+
+  assert.match(first, />0:10</);
+  assert.match(second, />0:10</);
+  assert.notEqual(
+    first.match(/stroke-dasharray="([^"]+)"/)?.[1],
+    second.match(/stroke-dasharray="([^"]+)"/)?.[1],
+  );
+  assert.equal(sdk.calls.length, 2);
+  assert.equal(plugin.animationTimer, timerId);
+  assert.equal(timers.size, 1);
+  assert.equal(timers.get(timerId), timer);
+  plugin.stop();
+  assert.equal(timers.size, 0);
+});
+
+test("cycles mode without replacing offline or missing-timeline labels", async () => {
+  const sdk = createSdk();
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async () => { throw new Error("unexpected request"); },
+  });
+  const settings = normalizeProgressSettings();
+  plugin.contexts.set("progress", {
+    action: "progress", active: true, settings, mode: "remaining",
+  });
+  plugin.lastState = { online: false };
+  assert.equal(await plugin.run({ context: "progress" }), true);
+  let svg = Buffer.from(sdk.calls.at(-1)[2].split(",")[1], "base64").toString("utf8");
+  assert.match(svg, />Offline</);
+  assert.equal(plugin.entry("progress").mode, "elapsed");
+
+  plugin.lastState = { online: true, available: true, timelineAvailable: false };
+  assert.equal(await plugin.run({ context: "progress" }), true);
+  svg = Buffer.from(sdk.calls.at(-1)[2].split(",")[1], "base64").toString("utf8");
+  assert.match(svg, />No timeline</);
+  assert.equal(plugin.entry("progress").mode, "total");
+});
+
+test("initializes and recreates progress contexts in remaining mode", async () => {
+  const sdk = createSdk();
+  let nextId = 0;
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async () => ({ ok: true, async json() { return state({ is_playing: false }); } }),
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"),
+    setIntervalImpl: () => ++nextId,
+    clearIntervalImpl() {},
+  });
+  const event = {
+    uuid: "com.ulanzi.ulanzistudio.spotifygsm.progress",
+    context: "progress",
+    param: DEFAULT_PROGRESS_SETTINGS,
+  };
+  plugin.add(event);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(plugin.entry("progress").mode, "remaining");
+  plugin.entry("progress").mode = "total";
+  plugin.clear({ param: [{ context: "progress" }] });
+  assert.equal(plugin.entry("progress"), undefined);
+  plugin.add(event);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(plugin.entry("progress").mode, "remaining");
+  plugin.entry("progress").mode = "elapsed";
+  plugin.stop();
+  assert.equal(plugin.entry("progress"), undefined);
+  plugin.add(event);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(plugin.entry("progress").mode, "remaining");
+  assert.equal(sdk.calls.filter(([type]) => type === "settings").length, 0);
+  plugin.stop();
 });
 
 test("uses one global animation timer, limits updates, deduplicates, and ends once", () => {

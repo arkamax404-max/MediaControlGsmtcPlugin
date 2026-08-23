@@ -103,10 +103,17 @@ unsafe COM enumeration or `IAudioEndpointVolume` as a fallback.
 
 ### Track Progress
 
-The circular arc starts at 12 o'clock and shows the played fraction. The centered
-label shows remaining time as `m:ss`, or `h:mm:ss` for tracks of at least one hour.
-It uses ceiling rounding so a playing track does not show `0:00` before it ends.
-Pause freezes the display; the final state renders `0:00` once.
+The circular arc starts at 12 o'clock and always shows the played fraction. The
+centered label defaults to remaining time. Press the progress key to cycle that
+key through remaining, elapsed, and total time, then back to remaining. This
+display-only interaction sends no playback command and does not change the ring's
+progress or animation. Each key keeps its mode for the current session and resets
+to remaining when its context is recreated.
+
+Labels use `m:ss`, or `h:mm:ss` for durations of at least one hour, and shrink to
+fit longer values or thicker configured strokes while staying centered. Remaining
+time uses ceiling rounding so a playing track does not show `0:00` before it ends.
+Pause freezes the display; the final remaining-time state renders `0:00` once.
 
 | Setting | Default | Accepted value |
 |---|---:|---|

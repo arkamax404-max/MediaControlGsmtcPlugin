@@ -23,6 +23,7 @@ const ACTIONS = Object.freeze({
 });
 
 const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
+const PROGRESS_MODES = Object.freeze(["remaining", "elapsed", "total"]);
 
 export function actionFromEvent(event) {
   const uuid = String(event?.uuid || event?.action || "");
@@ -96,8 +97,7 @@ export function extrapolatePosition(state, now = Date.now()) {
   return Math.max(0, Math.min(state.durationSeconds, position));
 }
 
-export function formatRemaining(seconds) {
-  const total = Math.max(0, Math.ceil(finiteNumber(seconds)));
+function formatDuration(total) {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const remainder = total % 60;
@@ -106,24 +106,89 @@ export function formatRemaining(seconds) {
     : `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+export function formatRemaining(seconds) {
+  return formatDuration(Math.max(0, Math.ceil(finiteNumber(seconds))));
+}
+
+export function nextProgressMode(mode) {
+  const current = PROGRESS_MODES.includes(mode) ? mode : "remaining";
+  return PROGRESS_MODES[(PROGRESS_MODES.indexOf(current) + 1) % PROGRESS_MODES.length];
+}
+
+export function formatProgressTime(mode, position, duration) {
+  const safeDuration = Math.max(0, finiteNumber(duration));
+  const safePosition = Math.max(0, Math.min(safeDuration, finiteNumber(position)));
+  if (mode === "elapsed") return formatDuration(Math.floor(safePosition));
+  if (mode === "total") return formatDuration(Math.ceil(safeDuration));
+  return formatRemaining(safeDuration - safePosition);
+}
+
 export function escapeXml(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
   })[character]);
 }
 
-export function renderProgressSvg({ progress = 0, text = "No timeline", settings = {} } = {}) {
+export function centeredTextPlacement(context, text, fontSize, center = 98) {
+  context.textAlign = "center";
+  context.textBaseline = "alphabetic";
+  context.font = `700 ${fontSize}px Arial, sans-serif`;
+  const metrics = context.measureText(String(text));
+  const measuredAscent = metrics.actualBoundingBoxAscent;
+  const measuredDescent = metrics.actualBoundingBoxDescent;
+  const measuredHeight = measuredAscent + measuredDescent;
+  const hasBoundingBox = Number.isFinite(measuredAscent) && measuredAscent >= 0
+    && Number.isFinite(measuredDescent) && measuredDescent >= 0
+    && Number.isFinite(measuredHeight) && measuredHeight > 0;
+  // Keep the fallback proportional to the selected font's em box.
+  const ascent = hasBoundingBox ? measuredAscent : fontSize * 0.8;
+  const descent = hasBoundingBox ? measuredDescent : fontSize * 0.2;
+  return { x: center, y: center + (ascent - descent) / 2 };
+}
+
+export function progressTextLayout(text, strokeWidth = DEFAULT_PROGRESS_SETTINGS.strokeWidth) {
+  const value = String(text);
+  if (!value.includes(":")) {
+    return { fontSize: value.length > 6 ? 34 : 42, constrained: false };
+  }
+  const safeStrokeWidth = normalizeProgressSettings({ strokeWidth }).strokeWidth;
+  const availableRadius = 70 - safeStrokeWidth / 2 - 4;
+  // Conservative Arial Bold advances exceed the measured Windows digit widths.
+  const widthEm = [...value].reduce((width, character) => (
+    width + (character === ":" || character === "." ? 0.29 : 0.58)
+  ), 0);
+  // The full-em height is conservative; its circle chord prevents corner overlap.
+  const geometryLimit = Math.floor((2 * availableRadius) / Math.sqrt(widthEm ** 2 + 1));
+  const fontSize = Math.max(16, Math.min(42, geometryLimit));
+  const estimatedWidth = widthEm * fontSize;
+  const maxWidth = 2 * Math.sqrt(availableRadius ** 2 - (fontSize / 2) ** 2);
+  const constrained = estimatedWidth > maxWidth;
+  return {
+    fontSize,
+    estimatedWidth,
+    maxWidth,
+    renderedWidth: constrained ? maxWidth : estimatedWidth,
+    constrained,
+  };
+}
+
+export function renderProgressSvg({ progress = 0, text = "No timeline", settings = {},
+  textContext = { measureText: () => ({}) } } = {}) {
   const safe = normalizeProgressSettings(settings);
   const ratio = Math.max(0, Math.min(1, finiteNumber(progress)));
   const radius = 70;
   const circumference = 2 * Math.PI * radius;
   const arc = ratio * circumference;
-  const fontSize = String(text).length > 6 ? 34 : 42;
+  const layout = progressTextLayout(text, safe.strokeWidth);
+  const placement = centeredTextPlacement(textContext, text, layout.fontSize);
+  const widthConstraint = layout.constrained
+    ? ` textLength="${layout.maxWidth.toFixed(3)}" lengthAdjust="spacingAndGlyphs"`
+    : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">`
     + `<rect width="196" height="196" fill="${safe.backgroundColor}"/>`
     + `<circle cx="98" cy="98" r="${radius}" fill="none" stroke="${safe.trackColor}" stroke-width="${safe.strokeWidth}"/>`
     + `<circle cx="98" cy="98" r="${radius}" fill="none" stroke="${safe.progressColor}" stroke-width="${safe.strokeWidth}" stroke-linecap="round" transform="rotate(-90 98 98)" stroke-dasharray="${arc.toFixed(3)} ${circumference.toFixed(3)}"/>`
-    + `<text x="98" y="98" fill="${safe.textColor}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="700" text-anchor="middle" dominant-baseline="central">${escapeXml(text)}</text>`
+    + `<text x="${placement.x}" y="${placement.y}" fill="${safe.textColor}" font-family="Arial, sans-serif" font-size="${layout.fontSize}" font-weight="700" text-anchor="middle"${widthConstraint}>${escapeXml(text)}</text>`
     + "</svg>";
 }
 
@@ -177,7 +242,12 @@ export class SpotifyGSMTCPlugin {
     const action = actionFromEvent(event);
     if (!action || !event?.context) return;
     const settings = normalizeProgressSettings(event.param);
-    this.contexts.set(event.context, { action, active: true, settings });
+    this.contexts.set(event.context, {
+      action,
+      active: true,
+      settings,
+      ...(action === "progress" ? { mode: "remaining" } : {}),
+    });
     if (action === "progress" && !settingsMatch(event.param, settings)) {
       this.sdk.setSettings?.(settings, event.context);
     }
@@ -221,6 +291,12 @@ export class SpotifyGSMTCPlugin {
   async run(event) {
     const entry = this.entry(event?.context);
     const action = entry?.action || actionFromEvent(event);
+    if (action === "progress" && entry) {
+      entry.mode = nextProgressMode(entry.mode);
+      this.rendered.delete(event.context);
+      this.render(event.context, action, this.lastState, true);
+      return true;
+    }
     const command = ACTIONS[action]?.command;
     if (!command) return false;
     try {
@@ -321,7 +397,7 @@ export class SpotifyGSMTCPlugin {
     this.manageAnimation();
   }
 
-  renderProgress(context, state, settings, force = false) {
+  renderProgress(context, state, settings, mode, force = false) {
     const now = this.now();
     let text = "Offline";
     let progress = 0;
@@ -329,7 +405,7 @@ export class SpotifyGSMTCPlugin {
     if (state.online && state.available && state.timelineAvailable) {
       const position = extrapolatePosition(state, now);
       progress = position / state.durationSeconds;
-      text = formatRemaining(state.durationSeconds - position);
+      text = formatProgressTime(mode, position, state.durationSeconds);
       advancing = state.isPlaying && position < state.durationSeconds;
     } else if (state.online) {
       text = "No timeline";
@@ -348,7 +424,7 @@ export class SpotifyGSMTCPlugin {
     const entry = this.entry(context);
     if (action === "progress") {
       if (entry?.active === false) return;
-      this.renderProgress(context, state, entry?.settings, force);
+      this.renderProgress(context, state, entry?.settings, entry?.mode, force);
       return;
     }
     const signature = [state.online, state.available, state.audioAvailable, state.revision,
