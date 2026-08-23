@@ -161,8 +161,7 @@ class GSMTCAdapter:
                         "is_playing": self._is_playing(status),
                         "title": getattr(properties, "title", ""),
                         "artist": getattr(properties, "artist", ""),
-                        "thumbnail": artwork.color if artwork else None,
-                        "thumbnail_grayscale": artwork.grayscale if artwork else None,
+                        "artwork_id": artwork.artwork_id if artwork else None,
                         "source": getattr(session, "source_app_user_model_id", ""),
                         **timeline,
                     }

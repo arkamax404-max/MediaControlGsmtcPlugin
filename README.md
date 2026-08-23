@@ -76,9 +76,9 @@ Windows. Pillow processes GSMTC artwork locally in memory.
    designated plugin folder but does not publish a stable Windows filesystem path,
    so this project intentionally does not invent one.
 
-6. Assign `Now Playing`, `Track Progress`, `Previous`, `Play/Pause`, `Next`,
-   `Volume Up`, `Volume Down`, and `Mute Toggle` from the `Spotify GSMTC`
-   category to D200 keys.
+6. Assign the desired actions from the `Spotify GSMTC` category to D200 keys.
+   The existing `Now Playing`, `Track Progress`, transport, and volume actions
+   remain available alongside the four artwork mosaic actions.
 
 7. Select the `Track Progress` key in Studio to configure its colors and stroke
    width. Each key instance keeps its own settings. Native color inputs and
@@ -91,6 +91,26 @@ without changing framing. If artwork is missing it uses a bundled music icon.
 Artwork processing stays in memory and makes no remote API request. Controls
 operate the Spotify Desktop GSMTC session when present, otherwise the current
 Windows media session. The play/pause key tracks local playback state.
+
+### Artwork Mosaic
+
+Place the four artwork actions as one adjacent 2x2 block in this exact order:
+
+```text
+Artwork Top Left     | Artwork Top Right
+Artwork Bottom Left  | Artwork Bottom Right
+```
+
+Together they display one centered 392x392 color artwork image. The complete
+source image is preserved: non-square media uses transparent letterboxing or
+pillarboxing so the D200's black key background shows through instead of cropping
+the artwork. Each key receives one exact 196x196 PNG quadrant. The mosaic remains
+in color while playback is paused. These four buttons have no press functionality
+yet; pressing them sends no command and changes no playback or local mode state.
+The polled state contains only an artwork content ID. The plugin fetches one
+immutable color, grayscale, and four-tile bundle when that ID changes, then
+shares the validated bundle across every artwork key instead of retransmitting
+images on each state poll.
 
 The volume actions operate only on Core Audio sessions owned by `Spotify.exe`.
 They never change the Windows master volume, endpoint volume, other applications,
@@ -169,7 +189,7 @@ not reread media properties or thumbnails. Media, timeline, and audio are cached
 `is_muted`, `audio_session_count`, and `audio_mixed` describe Spotify Core Audio.
 `timeline_available`, `position_seconds`, `duration_seconds`, `playback_rate`, and
 `position_updated_at` describe the normalized timeline anchor.
-Its API is limited to `GET /health`, `GET /state`, and
+Its API is limited to `GET /health`, `GET /state`, `GET /artwork/{artwork_id}`, and
 `POST /command/{previous,toggle,next,volume-up,volume-down,mute-toggle}`. It has no CORS support, remote bind, shell
 execution, cloud component, or device-discovery loop. The plugin connects to Studio
 through its launch-provided local WebSocket arguments and polls only the bridge.

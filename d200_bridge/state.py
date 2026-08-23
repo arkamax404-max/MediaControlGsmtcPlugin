@@ -1,34 +1,22 @@
-import base64
 import hashlib
 import json
 import math
+import re
 import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 
 MAX_TEXT_LENGTH = 160
-MAX_THUMBNAIL_BYTES = 1_000_000
-PNG_DATA_URI_PREFIX = "data:image/png;base64,"
+ARTWORK_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _text(value):
     return str(value or "").strip()[:MAX_TEXT_LENGTH]
 
 
-def _png_data_uri(value):
-    if not isinstance(value, str) or not value.startswith(PNG_DATA_URI_PREFIX):
-        return None
-    encoded = value[len(PNG_DATA_URI_PREFIX):]
-    if not encoded or len(encoded) % 4 or len(encoded) > 4 * math.ceil(MAX_THUMBNAIL_BYTES / 3):
-        return None
-    try:
-        data = base64.b64decode(encoded, validate=True)
-    except (ValueError, TypeError):
-        return None
-    if len(data) > MAX_THUMBNAIL_BYTES or not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return None
-    return value if base64.b64encode(data).decode("ascii") == encoded else None
+def _artwork_id(value):
+    return value if isinstance(value, str) and ARTWORK_ID_PATTERN.fullmatch(value) else None
 
 
 @dataclass(frozen=True)
@@ -37,8 +25,7 @@ class MediaState:
     is_playing: bool = False
     title: str = ""
     artist: str = ""
-    thumbnail: str | None = None
-    thumbnail_grayscale: str | None = None
+    artwork_id: str | None = None
     source: str = ""
     timeline_available: bool = False
     position_seconds: float = 0.0
@@ -59,8 +46,7 @@ class MediaState:
             "is_playing": self.is_playing,
             "title": self.title,
             "artist": self.artist,
-            "thumbnail": self.thumbnail,
-            "thumbnail_grayscale": self.thumbnail_grayscale,
+            "artwork_id": self.artwork_id,
             "source": self.source,
             "timeline_available": self.timeline_available,
             "position_seconds": self.position_seconds,
@@ -110,16 +96,12 @@ def normalize_timeline(raw):
 
 def normalize_state(raw):
     timeline = normalize_timeline(raw)
-    thumbnail = _png_data_uri(raw.get("thumbnail"))
     return MediaState(
         available=bool(raw.get("available")),
         is_playing=bool(raw.get("is_playing")) if raw.get("available") else False,
         title=_text(raw.get("title")),
         artist=_text(raw.get("artist")),
-        thumbnail=thumbnail,
-        thumbnail_grayscale=_png_data_uri(raw.get("thumbnail_grayscale"))
-        if thumbnail
-        else None,
+        artwork_id=_artwork_id(raw.get("artwork_id")),
         source=_text(raw.get("source")),
         **timeline,
     )

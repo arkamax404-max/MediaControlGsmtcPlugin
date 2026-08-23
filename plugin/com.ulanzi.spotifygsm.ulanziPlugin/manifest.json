@@ -23,6 +23,50 @@
       "Devices": ["D200"]
     },
     {
+      "Name": "Artwork Top Left",
+      "Icon": "assets/artwork-top-left.svg",
+      "States": [{ "Name": "Artwork Top Left", "Image": "assets/artwork-top-left.svg" }],
+      "Tooltip": "Show the top-left quarter of the current artwork",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.artwork-top-left",
+      "SupportedInMultiActions": false,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Artwork Top Right",
+      "Icon": "assets/artwork-top-right.svg",
+      "States": [{ "Name": "Artwork Top Right", "Image": "assets/artwork-top-right.svg" }],
+      "Tooltip": "Show the top-right quarter of the current artwork",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.artwork-top-right",
+      "SupportedInMultiActions": false,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Artwork Bottom Left",
+      "Icon": "assets/artwork-bottom-left.svg",
+      "States": [{ "Name": "Artwork Bottom Left", "Image": "assets/artwork-bottom-left.svg" }],
+      "Tooltip": "Show the bottom-left quarter of the current artwork",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.artwork-bottom-left",
+      "SupportedInMultiActions": false,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Artwork Bottom Right",
+      "Icon": "assets/artwork-bottom-right.svg",
+      "States": [{ "Name": "Artwork Bottom Right", "Image": "assets/artwork-bottom-right.svg" }],
+      "Tooltip": "Show the bottom-right quarter of the current artwork",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.artwork-bottom-right",
+      "SupportedInMultiActions": false,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
       "Name": "Previous",
       "Icon": "assets/previous.svg",
       "States": [{ "Name": "Previous", "Image": "assets/previous.svg" }],

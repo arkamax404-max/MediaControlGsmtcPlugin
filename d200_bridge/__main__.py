@@ -3,6 +3,7 @@ import signal
 import threading
 
 from .gsmtc import GSMTCAdapter
+from .artwork import artwork_processor
 from .core_audio import CoreAudioController
 from .server import BRIDGE_HOST, BRIDGE_PORT, create_server
 from .state import MediaStateCache
@@ -49,7 +50,8 @@ async def run_bridge():
     await adapter.start()
     await asyncio.to_thread(audio.refresh)
     server = create_server(
-        cache, adapter.command, loop, audio_commander=audio.command
+        cache, adapter.command, loop, audio_commander=audio.command,
+        artwork_lookup=artwork_processor.get_cached,
     )
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()

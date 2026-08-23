@@ -15,6 +15,7 @@ import {
   formatProgressTime,
   formatRemaining,
   nextProgressMode,
+  normalizeArtworkBundle,
   normalizeBridgeState,
   normalizeProgressSettings,
   progressTextLayout,
@@ -28,6 +29,27 @@ import {
 
 const PNG_ARTWORK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn6HhvwMAELoDvkeWIKAAAAAASUVORK5CYII=";
 const GRAYSCALE_ARTWORK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP08fH5LyMj4wgADIYCeqb1R30AAAAASUVORK5CYII=";
+const MOSAIC_TILES = Object.freeze([
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+M9wAgADygHI/iVYRQAAAABJRU5ErkJggg==",
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPjfAAACgwGAQ7v4AwAAAABJRU5ErkJggg==",
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4/5/BAQAHPgI/KNNAygAAAABJRU5ErkJggg==",
+]);
+const MOSAIC_ACTIONS = Object.freeze([
+  "artwork-top-left", "artwork-top-right", "artwork-bottom-left", "artwork-bottom-right",
+]);
+const ARTWORK_ID_A = "a".repeat(64);
+const ARTWORK_ID_B = "b".repeat(64);
+
+function artworkBundle(id = ARTWORK_ID_A, overrides = {}) {
+  return {
+    id,
+    color: PNG_ARTWORK,
+    grayscale: GRAYSCALE_ARTWORK,
+    tiles: MOSAIC_TILES,
+    ...overrides,
+  };
+}
 
 function createSdk() {
   const calls = [];
@@ -49,6 +71,10 @@ function createSdk() {
   };
 }
 
+function response(payload, ok = true) {
+  return { ok, async json() { return payload; } };
+}
+
 function state(overrides = {}) {
   return {
     available: true,
@@ -56,8 +82,7 @@ function state(overrides = {}) {
     is_playing: true,
     title: "Track",
     artist: "Artist",
-    thumbnail: PNG_ARTWORK,
-    thumbnail_grayscale: GRAYSCALE_ARTWORK,
+    artwork_id: null,
     audio_available: true,
     volume_percent: 65,
     is_muted: false,
@@ -73,7 +98,7 @@ function state(overrides = {}) {
   };
 }
 
-test("maps all eight declared action UUIDs without changing existing UUIDs", () => {
+test("maps all twelve declared action UUIDs without changing existing UUIDs", () => {
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.nowplaying" }), "nowplaying");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.previous" }), "previous");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.toggle" }), "toggle");
@@ -82,6 +107,9 @@ test("maps all eight declared action UUIDs without changing existing UUIDs", () 
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume-down" }), "volume-down");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.mute-toggle" }), "mute-toggle");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.progress" }), "progress");
+  for (const action of MOSAIC_ACTIONS) {
+    assert.equal(actionFromEvent({ uuid: `com.ulanzi.ulanzistudio.spotifygsm.${action}` }), action);
+  }
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume" }), null);
 });
 
@@ -515,18 +543,18 @@ test("sends direct color and grayscale PNGs and restores the identical color URI
   const sdk = createSdk();
   const plugin = new SpotifyGSMTCPlugin({ sdk });
   plugin.contexts.set("cover", "nowplaying");
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   const thumbnail = PNG_ARTWORK;
   const current = {
-    available: true, revision: 9, isPlaying: true,
-    title: "Track", artist: "Artist", thumbnail,
-    thumbnailGrayscale: GRAYSCALE_ARTWORK,
+    available: true, revision: 9, isPlaying: true, artworkId: ARTWORK_ID_A,
+    title: "Track", artist: "Artist",
   };
   plugin.render("cover", "nowplaying", current);
   plugin.render("cover", "nowplaying", current);
   plugin.render("cover", "nowplaying", { ...current, isPlaying: false });
   plugin.render("cover", "nowplaying", current);
 
-  assert.equal(current.thumbnail, thumbnail, "the bridge payload remains untouched");
+  assert.equal(plugin.artworkBundle.color, thumbnail, "the validated bundle remains untouched");
   assert.deepEqual(sdk.calls[0], ["base64", "cover", thumbnail, "Track\nArtist"]);
   assert.deepEqual(sdk.calls[1], ["base64", "cover", GRAYSCALE_ARTWORK, "Track\nArtist"]);
   assert.deepEqual(sdk.calls[2], ["base64", "cover", thumbnail, "Track\nArtist"]);
@@ -536,6 +564,18 @@ test("sends direct color and grayscale PNGs and restores the identical color URI
 test("accepts only canonical bounded PNG bridge artwork byte-for-byte", () => {
   assert.equal(artworkDataUri(PNG_ARTWORK), PNG_ARTWORK);
   assert.equal(artworkDataUri(GRAYSCALE_ARTWORK), GRAYSCALE_ARTWORK);
+  assert.equal(artworkDataUri("data:image/png;base64,iVBORw0KGgo="), null);
+  const corrupted = Buffer.from(PNG_ARTWORK.split(",")[1], "base64");
+  corrupted[corrupted.length - 5] ^= 1;
+  assert.equal(artworkDataUri(
+    `data:image/png;base64,${corrupted.toString("base64")}`,
+  ), null);
+  const original = Buffer.from(PNG_ARTWORK.split(",")[1], "base64");
+  const duplicateHeader = Buffer.concat([original.subarray(0, 33),
+    original.subarray(8, 33), original.subarray(33)]);
+  assert.equal(artworkDataUri(
+    `data:image/png;base64,${duplicateHeader.toString("base64")}`,
+  ), null);
 });
 
 test("rejects malformed or disguised artwork into the existing fallback", () => {
@@ -562,6 +602,10 @@ test("rejects malformed or disguised artwork into the existing fallback", () => 
     `data:image/gif;base64,${script}`,
     `data:image/webp;base64,${script}`,
     `data:image/png;base64,${"A".repeat(1_333_340)}`,
+    `${PNG_ARTWORK}trailing`,
+    `data:image/png;base64,${Buffer.from(
+      Buffer.from(PNG_ARTWORK.split(",")[1], "base64").subarray(0, -1),
+    ).toString("base64")}`,
   ];
   const sdk = createSdk();
   const plugin = new SpotifyGSMTCPlugin({ sdk });
@@ -577,42 +621,85 @@ test("rejects malformed or disguised artwork into the existing fallback", () => 
     && path === "./assets/music.svg" && text === "Track\nArtist"));
 });
 
-test("falls back to the direct color PNG when paused grayscale is missing or invalid", () => {
-  const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk });
-  for (const [context, thumbnailGrayscale] of [
-    ["missing", null],
-    ["invalid", "data:image/svg+xml;base64,PHN2Zy8+"],
-  ]) {
-    plugin.render(context, "nowplaying", {
-      online: true, available: true, revision: 1, isPlaying: false,
-      title: "Paused Track", artist: "Artist", thumbnail: PNG_ARTWORK,
-      thumbnailGrayscale,
-    });
+test("normalizes strict artwork IDs and atomic six-PNG bundles", () => {
+  const now = Date.parse("2026-08-23T12:00:01.000Z");
+  assert.equal(normalizeBridgeState(state({ artwork_id: ARTWORK_ID_A }), now).artworkId,
+    ARTWORK_ID_A);
+  for (const invalid of ["A".repeat(64), "a".repeat(63), `../${ARTWORK_ID_A}`]) {
+    assert.equal(normalizeBridgeState(state({ artwork_id: invalid }), now).artworkId, null);
   }
-  assert.deepEqual(sdk.calls, [
-    ["base64", "missing", PNG_ARTWORK, "Paused Track\nArtist"],
-    ["base64", "invalid", PNG_ARTWORK, "Paused Track\nArtist"],
-  ]);
+  const valid = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  assert.equal(valid.color, PNG_ARTWORK);
+  assert.equal(valid.grayscale, GRAYSCALE_ARTWORK);
+  assert.deepEqual(valid.tiles, MOSAIC_TILES);
+  assert.equal(normalizeArtworkBundle(artworkBundle(ARTWORK_ID_B), ARTWORK_ID_A), null);
+  assert.equal(normalizeArtworkBundle(artworkBundle(ARTWORK_ID_A, {
+    tiles: [...MOSAIC_TILES.slice(0, 3), "data:image/png;base64,iVBORw0KGgo="],
+  }), ARTWORK_ID_A), null);
 });
 
-test("normalizes both artwork fields independently at the plugin boundary", () => {
-  const now = Date.parse("2026-08-23T12:00:01.000Z");
-  const valid = normalizeBridgeState(state(), now);
-  assert.equal(valid.thumbnail, PNG_ARTWORK);
-  assert.equal(valid.thumbnailGrayscale, GRAYSCALE_ARTWORK);
+test("renders each direct color PNG tile in exact TL TR BL BR order", () => {
+  const sdk = createSdk();
+  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  const current = {
+    online: true, available: true, revision: 1, isPlaying: true, artworkId: ARTWORK_ID_A,
+  };
+  MOSAIC_ACTIONS.forEach((action, index) => {
+    plugin.contexts.set(`tile-${index}`, action);
+    plugin.render(`tile-${index}`, action, current);
+  });
+  assert.deepEqual(sdk.calls, MOSAIC_TILES.map((tile, index) => [
+    "base64", `tile-${index}`, tile, "",
+  ]));
+  assert.ok(sdk.calls.every(([, , uri]) => uri.startsWith("data:image/png;base64,")));
+  assert.ok(sdk.calls.every(([, , uri]) => !uri.startsWith("data:image/svg+xml")));
+});
 
-  const invalidGray = normalizeBridgeState(state({
-    thumbnail_grayscale: "data:image/svg+xml;base64,PHN2Zy8+",
-  }), now);
-  assert.equal(invalidGray.thumbnail, PNG_ARTWORK);
-  assert.equal(invalidGray.thumbnailGrayscale, null);
+test("rejects a missing or one-invalid bundle atomically into local fallbacks", () => {
+  for (const bundle of [null, normalizeArtworkBundle(artworkBundle(ARTWORK_ID_A, {
+    tiles: [...MOSAIC_TILES.slice(0, 3), "data:image/png;base64,iVBORw0KGgo="],
+  }), ARTWORK_ID_A)]) {
+    const sdk = createSdk();
+    const plugin = new SpotifyGSMTCPlugin({ sdk });
+    plugin.artworkBundle = bundle;
+    const current = { online: true, available: true, artworkId: ARTWORK_ID_A };
+    MOSAIC_ACTIONS.forEach((action, index) => plugin.render(`tile-${index}`, action, current));
+    assert.deepEqual(sdk.calls.map(([type, , path]) => [type, path]), [
+      ["path", "./assets/artwork-top-left.svg"],
+      ["path", "./assets/artwork-top-right.svg"],
+      ["path", "./assets/artwork-bottom-left.svg"],
+      ["path", "./assets/artwork-bottom-right.svg"],
+    ]);
+  }
+});
 
-  const invalidColor = normalizeBridgeState(state({
-    thumbnail: "data:image/png;base64,not-canonical",
-  }), now);
-  assert.equal(invalidColor.thumbnail, null);
-  assert.equal(invalidColor.thumbnailGrayscale, null);
+test("mosaic presses are inert and pause does not alter or rerender color tiles", async () => {
+  const sdk = createSdk();
+  let requests = 0;
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async () => { requests += 1; throw new Error("unexpected request"); },
+  });
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  const playing = { online: true, available: true, revision: 1, isPlaying: true,
+    artworkId: ARTWORK_ID_A };
+  for (const [index, action] of MOSAIC_ACTIONS.entries()) {
+    const context = `tile-${index}`;
+    plugin.contexts.set(context, action);
+    plugin.render(context, action, playing);
+  }
+  const before = structuredClone(sdk.calls);
+  for (const [index, action] of MOSAIC_ACTIONS.entries()) {
+    assert.equal(await plugin.run({
+      context: `tile-${index}`,
+      uuid: `com.ulanzi.ulanzistudio.spotifygsm.${action}`,
+    }), false);
+    plugin.render(`tile-${index}`, action, { ...playing, revision: 2, isPlaying: false });
+  }
+  assert.equal(requests, 0);
+  assert.deepEqual(sdk.calls, before);
+  assert.equal(sdk.calls.filter(([type]) => type === "settings").length, 0);
 });
 
 test("uses one quiet offline fallback and recovers", async () => {
@@ -620,9 +707,11 @@ test("uses one quiet offline fallback and recovers", async () => {
   let fail = true;
   const plugin = new SpotifyGSMTCPlugin({
     sdk,
-    fetchImpl: async () => {
+    fetchImpl: async (url) => {
       if (fail) throw new Error("offline");
-      return { ok: true, async json() { return state(); } };
+      return url.endsWith("/state")
+        ? response(state({ artwork_id: ARTWORK_ID_A }))
+        : response(artworkBundle());
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
@@ -635,6 +724,94 @@ test("uses one quiet offline fallback and recovers", async () => {
   assert.equal(sdk.calls.at(-1)[0], "base64");
 });
 
+test("fetches one shared bundle per artwork ID and skips it on unchanged polls", async () => {
+  const sdk = createSdk();
+  const requests = [];
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return url.endsWith("/state")
+        ? response(state({ artwork_id: ARTWORK_ID_A }))
+        : response(artworkBundle());
+    },
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"),
+  });
+  plugin.contexts.set("cover", "nowplaying");
+  MOSAIC_ACTIONS.forEach((action, index) => plugin.contexts.set(`tile-${index}`, action));
+  await plugin.poll();
+  await plugin.poll();
+  assert.deepEqual(requests, [
+    `${BRIDGE_ORIGIN}/state`,
+    `${BRIDGE_ORIGIN}/artwork/${ARTWORK_ID_A}`,
+    `${BRIDGE_ORIGIN}/state`,
+  ]);
+  assert.equal(plugin.artworkBundle.id, ARTWORK_ID_A);
+  assert.deepEqual(sdk.calls.slice(-5).map(([type]) => type), Array(5).fill("base64"));
+});
+
+test("bundle failure falls back atomically and retries on the next poll", async () => {
+  const sdk = createSdk();
+  let bundleAttempts = 0;
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/state")) return response(state({ artwork_id: ARTWORK_ID_A }));
+      bundleAttempts += 1;
+      return bundleAttempts === 1 ? response({}, false) : response(artworkBundle());
+    },
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"),
+  });
+  plugin.contexts.set("cover", "nowplaying");
+  MOSAIC_ACTIONS.forEach((action, index) => plugin.contexts.set(`tile-${index}`, action));
+  await plugin.poll();
+  assert.equal(plugin.artworkBundle, null);
+  assert.deepEqual(sdk.calls.slice(-5).map(([type]) => type), Array(5).fill("path"));
+  await plugin.poll();
+  assert.equal(bundleAttempts, 2);
+  assert.equal(plugin.artworkBundle.id, ARTWORK_ID_A);
+  assert.deepEqual(sdk.calls.slice(-5).map(([type]) => type), Array(5).fill("base64"));
+});
+
+test("ID changes clear old artwork before fetch and stale responses cannot install", async () => {
+  const sdk = createSdk();
+  let releaseBundle;
+  const pendingBundle = new Promise((resolve) => { releaseBundle = resolve; });
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/state")) return response(state({ artwork_id: ARTWORK_ID_B }));
+      await pendingBundle;
+      return response(artworkBundle(ARTWORK_ID_B));
+    },
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"),
+  });
+  plugin.contexts.set("cover", "nowplaying");
+  plugin.lastState = normalizeBridgeState(
+    state({ artwork_id: ARTWORK_ID_A }), Date.parse("2026-08-23T12:00:01.000Z"),
+  );
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  const polling = plugin.poll();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(plugin.lastState.artworkId, ARTWORK_ID_B);
+  assert.equal(plugin.artworkBundle, null);
+  assert.deepEqual(sdk.calls.at(-1), ["path", "cover", "./assets/music.svg", "Track\nArtist"]);
+  releaseBundle();
+  await polling;
+  assert.equal(plugin.artworkBundle.id, ARTWORK_ID_B);
+
+  let releaseStale;
+  const staleGate = new Promise((resolve) => { releaseStale = resolve; });
+  plugin.fetchImpl = async () => { await staleGate; return response(artworkBundle()); };
+  plugin.lastState = { ...plugin.lastState, artworkId: ARTWORK_ID_A };
+  plugin.artworkBundle = null;
+  const stale = plugin.fetchArtwork(ARTWORK_ID_A);
+  plugin.lastState = { ...plugin.lastState, artworkId: ARTWORK_ID_B };
+  releaseStale();
+  assert.equal(await stale, false);
+  assert.equal(plugin.artworkBundle, null);
+});
+
 test("routes nowplaying and toggle through shared toggle flow and rerenders polled state", async () => {
   const sdk = createSdk();
   const requests = [];
@@ -642,15 +819,18 @@ test("routes nowplaying and toggle through shared toggle flow and rerenders poll
     sdk,
     fetchImpl: async (url, options) => {
       requests.push([url, options.method]);
-      return { ok: true, async json() { return state({ is_playing: false, revision: 5 }); } };
+      return response(state({
+        is_playing: false, revision: 5, artwork_id: ARTWORK_ID_A,
+      }));
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
   plugin.contexts.set("cover-key", "nowplaying");
   plugin.contexts.set("toggle-key", "toggle");
   plugin.lastState = normalizeBridgeState(
-    state(), Date.parse("2026-08-23T12:00:01.000Z"),
+    state({ artwork_id: ARTWORK_ID_A }), Date.parse("2026-08-23T12:00:01.000Z"),
   );
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   plugin.renderAll();
   await plugin.run({ context: "cover-key" });
   assert.equal(plugin.lastState.isPlaying, false);
@@ -683,8 +863,9 @@ test("failed toggle commands preserve last state and rendered output", async () 
     plugin.contexts.set("control", action);
     plugin.lastState = {
       online: true, available: true, revision: 9, isPlaying: true,
-      title: "Track", artist: "Artist", thumbnail: PNG_ARTWORK,
+      title: "Track", artist: "Artist", artworkId: ARTWORK_ID_A,
     };
+    plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
     plugin.renderAll();
     const previousState = plugin.lastState;
     const previousCalls = structuredClone(sdk.calls);
@@ -820,5 +1001,41 @@ test("custom SVG icons declare SDK-sized intrinsic dimensions", () => {
     assert.match(root, /\bwidth="196"/);
     assert.match(root, /\bheight="196"/);
     assert.match(root, /\bviewBox="0 0 100 100"/);
+  }
+});
+
+test("manifest declares secure unique mosaic actions and keeps CodePath unchanged", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+  assert.equal(manifest.CodePath, "src/app.js");
+  assert.equal(manifest.Version, "1.2.0");
+  const uuids = [manifest.UUID, ...manifest.Actions.map(({ UUID }) => UUID)];
+  assert.equal(new Set(uuids).size, uuids.length);
+  readFileSync(new URL(`../${manifest.CodePath}`, import.meta.url));
+  const assetPaths = new Set([
+    manifest.Icon,
+    manifest.CategoryIcon,
+    ...manifest.Actions.flatMap((action) => [
+      action.Icon,
+      ...action.States.map(({ Image }) => Image),
+    ]),
+  ]);
+  for (const assetPath of assetPaths) readFileSync(new URL(`../${assetPath}`, import.meta.url));
+
+  const mosaic = manifest.Actions.filter(({ UUID }) => MOSAIC_ACTIONS.some(
+    (action) => UUID === `com.ulanzi.ulanzistudio.spotifygsm.${action}`,
+  ));
+  assert.deepEqual(mosaic.map(({ Name }) => Name), [
+    "Artwork Top Left", "Artwork Top Right", "Artwork Bottom Left", "Artwork Bottom Right",
+  ]);
+  for (const [index, action] of mosaic.entries()) {
+    assert.equal(action.Icon, `assets/${MOSAIC_ACTIONS[index]}.svg`);
+    assert.equal(action.States[0].Image, action.Icon);
+    const svg = readFileSync(new URL(`../${action.Icon}`, import.meta.url), "utf8");
+    const root = svg.match(/^<svg\b[^>]*>/)?.[0];
+    assert.match(root, /\bwidth="196"/);
+    assert.match(root, /\bheight="196"/);
+    assert.match(root, /\bviewBox="0 0 196 196"/);
+    assert.ok(!/<script\b|\bon\w+\s*=|\b(?:href|src)\s*=/i.test(svg));
+    assert.equal((svg.match(/#1DB954/g) || []).length, 1);
   }
 });

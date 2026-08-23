@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import hashlib
 import sys
 import threading
 import unittest
@@ -15,7 +16,16 @@ from urllib.request import Request, urlopen
 import d200_bridge.__main__ as bridge_main
 import d200_bridge.artwork as artwork_module
 import d200_bridge.gsmtc as gsmtc_module
-from d200_bridge.artwork import ARTWORK_CACHE_SIZE, ArtworkProcessor, ArtworkVariants
+from d200_bridge.artwork import (
+    ARTWORK_CACHE_SIZE,
+    MAX_BUNDLE_BYTES,
+    MAX_DECODED_PIXELS,
+    MOSAIC_SIZE,
+    MOSAIC_TILE_SIZE,
+    ArtworkProcessor,
+    ArtworkVariants,
+    validate_png_data_uri,
+)
 from d200_bridge.core_audio import AudioCommandResult
 from d200_bridge.gsmtc import (
     GSMTCAdapter,
@@ -24,7 +34,7 @@ from d200_bridge.gsmtc import (
     select_session,
     timespan_seconds,
 )
-from d200_bridge.server import BRIDGE_HOST, create_server
+from d200_bridge.server import BRIDGE_HOST, MAX_STATE_RESPONSE_BYTES, create_server
 from d200_bridge.state import (
     MediaStateCache,
     normalize_state,
@@ -32,16 +42,22 @@ from d200_bridge.state import (
 )
 
 try:
-    from PIL import Image, features
+    from PIL import Image, ImageOps, features
 except ImportError:
     Image = None
+    ImageOps = None
     features = None
 
 
 PILLOW_AVAILABLE = Image is not None
-PNG_HEADER_URI = "data:image/png;base64," + base64.b64encode(
+SIGNATURE_ONLY_URI = "data:image/png;base64," + base64.b64encode(
     b"\x89PNG\r\n\x1a\n"
 ).decode("ascii")
+REAL_PNG_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+
+
+def valid_variants():
+    return ArtworkVariants(REAL_PNG_URI, REAL_PNG_URI, (REAL_PNG_URI,) * 4)
 
 
 def image_bytes(image, image_format="PNG", **save_options):
@@ -78,7 +94,8 @@ class StateTests(unittest.TestCase):
         self.assertFalse(state.is_playing)
         self.assertLessEqual(len(state.title), 160)
         self.assertEqual(state.artist, "Artist")
-        self.assertIsNone(state.thumbnail)
+        self.assertIsNone(state.artwork_id)
+        self.assertNotIn("thumbnail", state.public())
 
     def test_revision_changes_only_with_state(self):
         cache = MediaStateCache()
@@ -143,67 +160,52 @@ class StateTests(unittest.TestCase):
         self.assertEqual(fingerprint, cache.fingerprint())
         self.assertEqual(json.loads(json.dumps(second.public()))["title"], "Track")
 
-    def test_artwork_contract_includes_both_variants_and_falls_back_safely(self):
-        grayscale = "data:image/png;base64," + base64.b64encode(
-            b"\x89PNG\r\n\x1a\ngray"
-        ).decode("ascii")
+    def test_state_publishes_only_strict_artwork_id_and_never_rasters(self):
+        artwork_id = "a" * 64
         state = normalize_state({
             "available": True,
-            "thumbnail": PNG_HEADER_URI,
-            "thumbnail_grayscale": grayscale,
+            "artwork_id": artwork_id,
+            "thumbnail": REAL_PNG_URI,
+            "thumbnail_grayscale": REAL_PNG_URI,
+            "artwork_tiles": [REAL_PNG_URI] * 4,
         })
-        self.assertEqual(state.thumbnail, PNG_HEADER_URI)
-        self.assertEqual(state.thumbnail_grayscale, grayscale)
-        self.assertEqual(state.public()["thumbnail_grayscale"], grayscale)
-
-        missing_gray = normalize_state({
-            "available": True,
-            "thumbnail": PNG_HEADER_URI,
-            "thumbnail_grayscale": "data:image/svg+xml;base64,PHN2Zy8+",
-        })
-        self.assertEqual(missing_gray.thumbnail, PNG_HEADER_URI)
-        self.assertIsNone(missing_gray.thumbnail_grayscale)
-
-        malformed_color = normalize_state({
-            "available": True,
-            "thumbnail": "data:image/png;base64,not-canonical",
-            "thumbnail_grayscale": grayscale,
-        })
-        self.assertIsNone(malformed_color.thumbnail)
-        self.assertIsNone(malformed_color.thumbnail_grayscale)
+        self.assertEqual(state.artwork_id, artwork_id)
+        self.assertEqual(state.public()["artwork_id"], artwork_id)
+        self.assertNotIn("thumbnail", state.public())
+        self.assertNotIn("thumbnail_grayscale", state.public())
+        self.assertNotIn("artwork_tiles", state.public())
+        for invalid in ("A" * 64, "a" * 63, "../" + "a" * 64, SIGNATURE_ONLY_URI):
+            self.assertIsNone(normalize_state({"artwork_id": invalid}).artwork_id)
 
 
 class ArtworkCacheTests(unittest.TestCase):
     def test_content_hash_cache_avoids_reprocessing_and_evicts_lru(self):
         processor = ArtworkProcessor(cache_size=2)
-        variants = {
-            data: ArtworkVariants(f"color-{data!r}", f"gray-{data!r}")
-            for data in (b"one", b"two", b"three")
-        }
         with patch.object(
             processor,
             "_decode_encode",
-            side_effect=lambda data: variants[data],
+            side_effect=lambda _data: valid_variants(),
         ) as decode:
-            self.assertEqual(processor.process(b"one"), variants[b"one"])
-            self.assertEqual(processor.process(b"one"), variants[b"one"])
-            self.assertEqual(processor.process(b"two"), variants[b"two"])
-            self.assertEqual(processor.process(b"one"), variants[b"one"])
-            self.assertEqual(processor.process(b"three"), variants[b"three"])
-            self.assertEqual(processor.process(b"two"), variants[b"two"])
+            one = processor.process(b"one")
+            self.assertIs(processor.process(b"one"), one)
+            processor.process(b"two")
+            self.assertIs(processor.process(b"one"), one)
+            processor.process(b"three")
+            processor.process(b"two")
         self.assertEqual(decode.call_count, 4)
         self.assertEqual(processor.cached_entries, 2)
 
     def test_transient_failure_retries_then_caches_success(self):
         processor = ArtworkProcessor()
-        success = ArtworkVariants("color", "grayscale")
+        success = valid_variants()
         with patch.object(
             processor, "_decode_encode", side_effect=[None, success]
         ) as decode:
             self.assertIsNone(processor.process(b"same-content"))
             self.assertEqual(processor.cached_entries, 0)
-            self.assertEqual(processor.process(b"same-content"), success)
-            self.assertEqual(processor.process(b"same-content"), success)
+            result = processor.process(b"same-content")
+            self.assertIsNotNone(result)
+            self.assertIs(processor.process(b"same-content"), result)
         self.assertEqual(decode.call_count, 2)
         self.assertEqual(processor.cached_entries, 1)
 
@@ -212,7 +214,7 @@ class ArtworkCacheTests(unittest.TestCase):
         processor = ArtworkProcessor()
 
         def variants(data):
-            return ArtworkVariants(f"color-{data!r}", f"gray-{data!r}")
+            return valid_variants()
 
         with patch.object(processor, "_decode_encode", side_effect=variants) as decode:
             for index in range(8):
@@ -227,7 +229,7 @@ class ArtworkCacheTests(unittest.TestCase):
 
     def test_same_content_concurrency_decodes_once_inside_lock(self):
         processor = ArtworkProcessor()
-        success = ArtworkVariants("color", "grayscale")
+        success = valid_variants()
         decode_started = threading.Event()
         second_attempting = threading.Event()
         release_decode = threading.Event()
@@ -248,10 +250,22 @@ class ArtworkCacheTests(unittest.TestCase):
                 second = executor.submit(second_call)
                 self.assertTrue(second_attempting.wait(timeout=2))
                 release_decode.set()
-                self.assertEqual(first.result(timeout=2), success)
-                self.assertEqual(second.result(timeout=2), success)
+                first_result = first.result(timeout=2)
+                self.assertIs(first_result, second.result(timeout=2))
         self.assertEqual(mocked.call_count, 1)
         self.assertEqual(processor.cached_entries, 1)
+
+    def test_endpoint_lookup_is_strict_and_does_not_promote_lru(self):
+        processor = ArtworkProcessor(cache_size=2)
+        with patch.object(processor, "_decode_encode", return_value=valid_variants()):
+            first = processor.process(b"first")
+            second = processor.process(b"second")
+            self.assertIs(processor.get_cached(first.artwork_id), first)
+            processor.process(b"third")
+        self.assertIsNone(processor.get_cached(first.artwork_id))
+        self.assertIsNotNone(processor.get_cached(second.artwork_id))
+        for invalid in ("A" * 64, "a" * 63, "../" + "a" * 64):
+            self.assertIsNone(processor.get_cached(invalid))
 
 
 @unittest.skipUnless(PILLOW_AVAILABLE, "Pillow is not installed")
@@ -264,13 +278,49 @@ class ArtworkProcessorTests(unittest.TestCase):
         ])
         return image_bytes(image)
 
+    def recomposed_mosaic(self, result):
+        tiles = [data_uri_image(tile).convert("RGBA") for tile in result.mosaic_tiles]
+        mosaic = Image.new("RGBA", (MOSAIC_SIZE, MOSAIC_SIZE))
+        for tile, position in zip(tiles, ((0, 0), (196, 0), (0, 196), (196, 196))):
+            mosaic.paste(tile, position)
+        return mosaic, tiles
+
+    def marked_rectangle(self, width, height):
+        image = Image.new("RGBA", (width, height), (20, 30, 40, 255))
+        marker = 20
+        colors = [
+            (255, 0, 0, 255),
+            (0, 255, 0, 255),
+            (0, 0, 255, 255),
+            (255, 255, 0, 255),
+            (0, 255, 255, 255),
+            (255, 0, 255, 255),
+            (255, 128, 0, 255),
+            (180, 80, 255, 255),
+        ]
+        boxes = [
+            (0, 0, marker, marker),
+            (width - marker, 0, width, marker),
+            (0, height - marker, marker, height),
+            (width - marker, height - marker, width, height),
+            (width // 2 - marker // 2, 0, width // 2 + marker // 2, marker),
+            (width // 2 - marker // 2, height - marker, width // 2 + marker // 2, height),
+            (0, height // 2 - marker // 2, marker, height // 2 + marker // 2),
+            (width - marker, height // 2 - marker // 2, width, height // 2 + marker // 2),
+        ]
+        for box, color in zip(boxes, colors):
+            image.paste(color, box)
+        return image, colors
+
     def test_outputs_matching_png_frames_with_alpha_and_pixel_positions_preserved(self):
-        result = ArtworkProcessor().process(self.asymmetric_png())
+        source_bytes = self.asymmetric_png()
+        result = ArtworkProcessor().process(source_bytes)
         color = data_uri_image(result.color).convert("RGBA")
         grayscale = data_uri_image(result.grayscale).convert("RGBA")
 
         self.assertTrue(result.color.startswith("data:image/png;base64,"))
         self.assertTrue(result.grayscale.startswith("data:image/png;base64,"))
+        self.assertEqual(result.artwork_id, hashlib.sha256(source_bytes).hexdigest())
         self.assertEqual(color.size, (3, 2))
         self.assertEqual(grayscale.size, color.size)
         expected = image_pixels(
@@ -287,22 +337,107 @@ class ArtworkProcessorTests(unittest.TestCase):
             self.assertEqual(pixel[1], pixel[2])
         self.assertNotEqual(color.getpixel((0, 0)), color.getpixel((2, 1)))
 
-    def test_applies_exif_orientation_identically(self):
-        source = Image.new("RGB", (2, 3))
-        source.putdata([
-            (255, 0, 0), (0, 255, 0),
-            (0, 0, 255), (255, 255, 0),
-            (255, 0, 255), (0, 255, 255),
-        ])
+    def test_wide_mosaic_contains_every_edge_with_exact_transparent_letterbox(self):
+        source, markers = self.marked_rectangle(400, 200)
+        data = image_bytes(source)
+        processor = ArtworkProcessor()
+
+        with patch.object(
+            artwork_module.ImageOps,
+            "exif_transpose",
+            wraps=artwork_module.ImageOps.exif_transpose,
+        ) as orient, patch.object(
+            artwork_module.Image,
+            "open",
+            wraps=artwork_module.Image.open,
+        ) as open_image:
+            result = processor.process(data)
+            self.assertIs(processor.process(data), result)
+
+        self.assertEqual(orient.call_count, 1, "one oriented source decode per cache miss")
+        self.assertEqual(open_image.call_count, 1, "one source open per cache miss")
+        self.assertEqual(len(result.mosaic_tiles), 4)
+        recomposed, tiles = self.recomposed_mosaic(result)
+        self.assertTrue(all(tile.size == (MOSAIC_TILE_SIZE, MOSAIC_TILE_SIZE) for tile in tiles))
+        self.assertTrue(all(tile.format == "PNG" for tile in map(data_uri_image, result.mosaic_tiles)))
+        expected = Image.new("RGBA", (392, 392), (0, 0, 0, 0))
+        expected.paste(source.resize((392, 196), Image.Resampling.LANCZOS), (0, 98))
+        self.assertEqual(image_pixels(recomposed), image_pixels(expected))
+        self.assertEqual(set(image_pixels(recomposed.crop((0, 0, 392, 98)))), {(0, 0, 0, 0)})
+        self.assertEqual(set(image_pixels(recomposed.crop((0, 294, 392, 392)))), {(0, 0, 0, 0)})
+        content_pixels = image_pixels(recomposed.crop((0, 98, 392, 294)))
+        for marker in markers:
+            self.assertIn(marker, content_pixels)
+        self.assertEqual(
+            [recomposed.getpixel(point) for point in (
+                (8, 106), (384, 106), (8, 286), (384, 286),
+                (196, 106), (196, 286), (8, 196), (384, 196),
+            )],
+            markers,
+        )
+
+    def test_tall_mosaic_contains_every_edge_with_exact_transparent_pillarbox(self):
+        source, markers = self.marked_rectangle(200, 400)
+        result = ArtworkProcessor().process(image_bytes(source))
+        recomposed, _tiles = self.recomposed_mosaic(result)
+        expected = Image.new("RGBA", (392, 392), (0, 0, 0, 0))
+        expected.paste(source.resize((196, 392), Image.Resampling.LANCZOS), (98, 0))
+        self.assertEqual(image_pixels(recomposed), image_pixels(expected))
+        self.assertEqual(set(image_pixels(recomposed.crop((0, 0, 98, 392)))), {(0, 0, 0, 0)})
+        self.assertEqual(set(image_pixels(recomposed.crop((294, 0, 392, 392)))), {(0, 0, 0, 0)})
+        content_pixels = image_pixels(recomposed.crop((98, 0, 294, 392)))
+        for marker in markers:
+            self.assertIn(marker, content_pixels)
+        self.assertEqual(
+            [recomposed.getpixel(point) for point in (
+                (106, 8), (286, 8), (106, 384), (286, 384),
+                (196, 8), (196, 384), (106, 196), (286, 196),
+            )],
+            markers,
+        )
+
+    def test_square_mosaic_fills_canvas_without_padding_or_geometry_change(self):
+        source = Image.new("RGBA", (392, 392))
+        source.paste((255, 0, 0, 255), (0, 0, 196, 196))
+        source.paste((0, 255, 0, 192), (196, 0, 392, 196))
+        source.paste((0, 0, 255, 128), (0, 196, 196, 392))
+        source.paste((255, 255, 0, 64), (196, 196, 392, 392))
+        result = ArtworkProcessor().process(image_bytes(source))
+        recomposed, tiles = self.recomposed_mosaic(result)
+        self.assertEqual(image_pixels(recomposed), image_pixels(source))
+        self.assertEqual(
+            [tile.getpixel((20, 20)) for tile in tiles],
+            [(255, 0, 0, 255), (0, 255, 0, 192),
+             (0, 0, 255, 128), (255, 255, 0, 64)],
+        )
+
+    def test_exif_oriented_rectangle_remains_complete_and_correctly_oriented(self):
+        source = Image.new("RGBA", (196, 392))
+        source.paste((255, 0, 0, 255), (0, 0, 98, 196))
+        source.paste((0, 255, 0, 192), (98, 0, 196, 196))
+        source.paste((0, 0, 255, 128), (0, 196, 98, 392))
+        source.paste((255, 255, 0, 64), (98, 196, 196, 392))
         exif = source.getexif()
         exif[274] = 6
-        result = ArtworkProcessor().process(
-            image_bytes(source, "JPEG", exif=exif, quality=100, subsampling=0)
+        encoded = image_bytes(source, "PNG", exif=exif)
+        oriented = ImageOps.exif_transpose(Image.open(io.BytesIO(encoded))).convert("RGBA")
+        result = ArtworkProcessor().process(encoded)
+        color = data_uri_image(result.color).convert("RGBA")
+        self.assertEqual(image_pixels(color), image_pixels(oriented))
+
+        expected_mosaic = Image.new("RGBA", (392, 392), (0, 0, 0, 0))
+        expected_mosaic.paste(oriented, (0, 98))
+        recomposed, _tiles = self.recomposed_mosaic(result)
+        self.assertEqual(image_pixels(recomposed), image_pixels(expected_mosaic))
+        self.assertEqual(
+            [recomposed.getpixel(point) for point in (
+                (20, 118), (372, 118), (20, 274), (372, 274),
+            )],
+            [(0, 0, 255, 128), (255, 0, 0, 255),
+             (255, 255, 0, 64), (0, 255, 0, 192)],
         )
-        color = data_uri_image(result.color)
-        grayscale = data_uri_image(result.grayscale)
-        self.assertEqual(color.size, (3, 2))
-        self.assertEqual(grayscale.size, color.size)
+        self.assertEqual(set(image_pixels(recomposed.crop((0, 0, 392, 98)))), {(0, 0, 0, 0)})
+        self.assertEqual(set(image_pixels(recomposed.crop((0, 294, 392, 392)))), {(0, 0, 0, 0)})
 
     def test_animated_gif_uses_first_frame(self):
         first = Image.new("RGBA", (2, 1))
@@ -312,6 +447,7 @@ class ArtworkProcessorTests(unittest.TestCase):
         result = ArtworkProcessor().process(source)
         color = data_uri_image(result.color).convert("RGBA")
         self.assertEqual(image_pixels(color), image_pixels(first))
+        self.assertEqual(len(result.mosaic_tiles), 4)
 
     @unittest.skipUnless(
         PILLOW_AVAILABLE and features.check("webp"), "Pillow WebP codec is unavailable"
@@ -330,6 +466,7 @@ class ArtworkProcessorTests(unittest.TestCase):
         result = ArtworkProcessor().process(source)
         color = data_uri_image(result.color).convert("RGBA")
         self.assertEqual(image_pixels(color), image_pixels(first))
+        self.assertEqual(len(result.mosaic_tiles), 4)
 
     def test_rejects_malformed_truncated_svg_disguised_and_resource_excesses(self):
         valid = self.asymmetric_png()
@@ -346,8 +483,44 @@ class ArtworkProcessorTests(unittest.TestCase):
         )
         self.assertIsNone(ArtworkProcessor(max_decoded_pixels=5).process(valid))
         self.assertIsNone(ArtworkProcessor(max_encoded_bytes=10).process(valid))
+        aggregate_limited = ArtworkProcessor(max_aggregate_encoded_bytes=1)
+        self.assertIsNone(aggregate_limited.process(valid))
+        self.assertEqual(aggregate_limited.cached_entries, 0)
         with patch.object(artwork_module.Image, "MAX_IMAGE_PIXELS", 1):
             self.assertIsNone(ArtworkProcessor().process(valid))
+
+    def test_strict_png_profile_rejects_signature_probes_structure_and_crc_failures(self):
+        rgba = REAL_PNG_URI
+        self.assertEqual(validate_png_data_uri(rgba), rgba)
+        self.assertIsNone(validate_png_data_uri(SIGNATURE_ONLY_URI))
+
+        encoded = base64.b64decode(rgba.split(",", 1)[1])
+        invalid_bytes = [
+            encoded[:-1],
+            encoded + b"trailing",
+            encoded[:20] + bytes((encoded[20] ^ 1,)) + encoded[21:],
+            encoded[:33] + encoded[8:33] + encoded[33:],
+        ]
+        rgb = "data:image/png;base64," + base64.b64encode(
+            image_bytes(Image.new("RGB", (1, 1), (255, 0, 0)))
+        ).decode("ascii")
+        for data in invalid_bytes:
+            uri = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+            self.assertIsNone(validate_png_data_uri(uri))
+        self.assertIsNone(validate_png_data_uri(rgb))
+        self.assertEqual(MAX_DECODED_PIXELS, 4_194_304)
+        self.assertIsNone(ArtworkProcessor().process(
+            image_bytes(Image.new("RGBA", (4097, 1), (0, 0, 0, 0)))
+        ))
+        processor = ArtworkProcessor()
+        invalid = ArtworkVariants(
+            SIGNATURE_ONLY_URI,
+            REAL_PNG_URI,
+            (REAL_PNG_URI,) * 4,
+        )
+        with patch.object(processor, "_decode_encode", return_value=invalid):
+            self.assertIsNone(processor.process(b"invalid-output"))
+        self.assertEqual(processor.cached_entries, 0)
 
 
 class FakeStream:
@@ -438,7 +611,7 @@ class ThumbnailStreamTests(unittest.IsolatedAsyncioTestCase):
             "winrt.windows.storage": windows.storage,
             "winrt.windows.storage.streams": streams,
         }
-        variants = ArtworkVariants(PNG_HEADER_URI, PNG_HEADER_URI)
+        variants = valid_variants()
         with patch.dict(sys.modules, modules), patch.object(
             gsmtc_module.artwork_processor, "process", return_value=variants
         ) as process:
@@ -539,10 +712,16 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         adapter = GSMTCAdapter(
             cache,
             manager_factory=AsyncMock(return_value=manager),
-            thumbnail_reader=AsyncMock(return_value=None),
+            thumbnail_reader=AsyncMock(return_value=ArtworkVariants(
+                REAL_PNG_URI,
+                REAL_PNG_URI,
+                (REAL_PNG_URI,) * 4,
+                artwork_id="a" * 64,
+            )),
         )
         await adapter.start()
         self.assertEqual(first.media_reads, 1)
+        self.assertEqual(cache.get().artwork_id, "a" * 64)
         first.timeline_properties_changed.fire()
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -621,8 +800,16 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
+        self.artwork_processor = ArtworkProcessor()
+        self.variants = self.artwork_processor.process(
+            image_bytes(Image.new("RGBA", (2, 2), (20, 40, 60, 128)))
+        )
         self.cache = MediaStateCache()
-        self.cache.update({"available": True, "title": "Local Track"})
+        self.cache.update({
+            "available": True,
+            "title": "Local Track",
+            "artwork_id": self.variants.artwork_id,
+        })
         self.loop = asyncio.new_event_loop()
         self.loop_thread = threading.Thread(target=self.loop.run_forever)
         self.loop_thread.start()
@@ -657,6 +844,7 @@ class ServerTests(unittest.TestCase):
         self.server = create_server(
             self.cache, commander, self.loop, port=0,
             audio_commander=audio_commander,
+            artwork_lookup=self.artwork_processor.get_cached,
         )
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.start()
@@ -675,8 +863,14 @@ class ServerTests(unittest.TestCase):
             create_server(self.cache, None, self.loop, host="0.0.0.0", port=0)
 
         with urlopen(f"{self.base_url}/state", timeout=2) as response:
-            payload = json.load(response)
+            state_body = response.read()
+            payload = json.loads(state_body)
         self.assertEqual(payload["title"], "Local Track")
+        self.assertEqual(payload["artwork_id"], self.variants.artwork_id)
+        self.assertLessEqual(len(state_body), MAX_STATE_RESPONSE_BYTES)
+        self.assertNotIn(b"data:image", state_body)
+        self.assertNotIn(b"thumbnail", state_body)
+        self.assertNotIn(b"tiles", state_body)
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
 
         request = Request(f"{self.base_url}/command/next", data=b"{}", method="POST")
@@ -714,6 +908,60 @@ class ServerTests(unittest.TestCase):
             urlopen(f"{self.base_url}/unknown", timeout=2)
         self.assertEqual(error.exception.code, 404)
         error.exception.close()
+
+    def test_artwork_bundle_is_strict_immutable_conditional_and_read_only(self):
+        artwork_id = self.variants.artwork_id
+        url = f"{self.base_url}/artwork/{artwork_id}"
+        with urlopen(url, timeout=2) as response:
+            body = response.read()
+            payload = json.loads(body)
+            self.assertEqual(response.headers["ETag"], f'"{artwork_id}"')
+            self.assertEqual(
+                response.headers["Cache-Control"],
+                "private, max-age=31536000, immutable",
+            )
+        self.assertLessEqual(len(body), MAX_BUNDLE_BYTES)
+        self.assertEqual(payload, self.variants.public())
+        self.assertEqual(payload["id"], artwork_id)
+        self.assertEqual(len(payload["tiles"]), 4)
+        self.assertTrue(all(validate_png_data_uri(value) for value in (
+            payload["color"], payload["grayscale"], *payload["tiles"]
+        )))
+
+        conditional = Request(url, headers={"If-None-Match": f'"{artwork_id}"'})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(conditional, timeout=2)
+        self.assertEqual(error.exception.code, 304)
+        self.assertEqual(error.exception.read(), b"")
+        self.assertEqual(error.exception.headers["ETag"], f'"{artwork_id}"')
+        error.exception.close()
+
+        for invalid in ("f" * 64, "A" * 64, "a" * 63, f"{artwork_id}?other=1"):
+            with self.assertRaises(HTTPError) as error:
+                urlopen(f"{self.base_url}/artwork/{invalid}", timeout=2)
+            self.assertEqual(error.exception.code, 404)
+            error.exception.close()
+
+        write = Request(url, data=b"{}", method="POST")
+        with self.assertRaises(HTTPError) as error:
+            urlopen(write, timeout=2)
+        self.assertEqual(error.exception.code, 404)
+        error.exception.close()
+
+    def test_evicted_artwork_id_returns_404_without_exposing_other_ids(self):
+        evicted_id = self.variants.artwork_id
+        newest = None
+        for index in range(8):
+            newest = self.artwork_processor.process(
+                image_bytes(Image.new("RGBA", (2, 2), (index + 1, 0, 0, 255)))
+            )
+        with self.assertRaises(HTTPError) as error:
+            urlopen(f"{self.base_url}/artwork/{evicted_id}", timeout=2)
+        self.assertEqual(error.exception.code, 404)
+        self.assertEqual(json.load(error.exception), {"error": "not_found"})
+        error.exception.close()
+        with urlopen(f"{self.base_url}/artwork/{newest.artwork_id}", timeout=2) as response:
+            self.assertEqual(json.load(response)["id"], newest.artwork_id)
 
 if __name__ == "__main__":
     unittest.main()

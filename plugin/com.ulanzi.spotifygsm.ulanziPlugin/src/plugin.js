@@ -13,6 +13,14 @@ export const DEFAULT_PROGRESS_SETTINGS = Object.freeze({
 
 const ACTIONS = Object.freeze({
   nowplaying: { command: "toggle", icon: "./assets/music.svg" },
+  "artwork-top-left": { command: null, icon: "./assets/artwork-top-left.svg", tile: 0,
+    title: "Artwork Top Left" },
+  "artwork-top-right": { command: null, icon: "./assets/artwork-top-right.svg", tile: 1,
+    title: "Artwork Top Right" },
+  "artwork-bottom-left": { command: null, icon: "./assets/artwork-bottom-left.svg", tile: 2,
+    title: "Artwork Bottom Left" },
+  "artwork-bottom-right": { command: null, icon: "./assets/artwork-bottom-right.svg", tile: 3,
+    title: "Artwork Bottom Right" },
   previous: { command: "previous", icon: "./assets/previous.svg" },
   toggle: { command: "toggle", icon: "./assets/play.svg" },
   next: { command: "next", icon: "./assets/next.svg" },
@@ -24,9 +32,19 @@ const ACTIONS = Object.freeze({
 
 const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const ARTWORK_PATTERN = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/;
+const ARTWORK_ID_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_ARTWORK_BYTES = 1_000_000;
 const MAX_ARTWORK_BASE64_LENGTH = 4 * Math.ceil(MAX_ARTWORK_BYTES / 3);
+const MAX_ARTWORK_PIXELS = 4_194_304;
+const MAX_ARTWORK_DIMENSION = 4096;
 const PROGRESS_MODES = Object.freeze(["remaining", "elapsed", "total"]);
+const CRC32_TABLE = Object.freeze(Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = (value >>> 1) ^ ((value & 1) ? 0xEDB88320 : 0);
+  }
+  return value >>> 0;
+}));
 
 export function actionFromEvent(event) {
   const uuid = String(event?.uuid || event?.action || "");
@@ -66,7 +84,6 @@ export function normalizeBridgeState(payload, now = Date.now()) {
   const positionUpdatedAt = Date.parse(payload.position_updated_at || "");
   const timelineAvailable = payload.timeline_available === true
     && duration > 0 && position >= 0 && Number.isFinite(positionUpdatedAt);
-  const thumbnail = artworkDataUri(payload.thumbnail);
   return {
     online: true,
     available: payload.available === true,
@@ -74,8 +91,8 @@ export function normalizeBridgeState(payload, now = Date.now()) {
     isPlaying: payload.available === true && payload.is_playing === true,
     title: String(payload.title || "").trim().slice(0, 48),
     artist: String(payload.artist || "").trim().slice(0, 48),
-    thumbnail,
-    thumbnailGrayscale: thumbnail ? artworkDataUri(payload.thumbnail_grayscale) : null,
+    artworkId: ARTWORK_ID_PATTERN.test(String(payload.artwork_id || ""))
+      ? payload.artwork_id : null,
     audioAvailable: payload.audio_available === true,
     volumePercent: Number.isInteger(payload.volume_percent)
       ? Math.max(0, Math.min(100, payload.volume_percent))
@@ -141,10 +158,68 @@ export function artworkDataUri(value) {
   const bytes = Buffer.from(encoded, "base64");
   if (bytes.length === 0 || bytes.length > MAX_ARTWORK_BYTES
     || bytes.toString("base64") !== encoded) return null;
-  const validSignature = bytes.length >= 8 && bytes.subarray(0, 8).equals(
-    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
-  );
-  return validSignature ? artwork : null;
+  return validBridgePng(bytes) ? artwork : null;
+}
+
+function crc32(...parts) {
+  let crc = 0xFFFFFFFF;
+  for (const bytes of parts) {
+    for (const byte of bytes) {
+      crc = CRC32_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function validBridgePng(bytes) {
+  const signature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  if (bytes.length < 45 || !bytes.subarray(0, 8).equals(signature)) return false;
+  let offset = 8;
+  let sawHeader = false;
+  let idatBytes = 0;
+  let sawEnd = false;
+  while (offset < bytes.length) {
+    if (bytes.length - offset < 12) return false;
+    const length = bytes.readUInt32BE(offset);
+    const typeBytes = bytes.subarray(offset + 4, offset + 8);
+    const type = typeBytes.toString("ascii");
+    const end = offset + 12 + length;
+    if (end > bytes.length) return false;
+    const data = bytes.subarray(offset + 8, offset + 8 + length);
+    const expectedCrc = bytes.readUInt32BE(offset + 8 + length);
+    if (crc32(typeBytes, data) !== expectedCrc) return false;
+    if (!sawHeader) {
+      if (type !== "IHDR" || length !== 13) return false;
+      const width = data.readUInt32BE(0);
+      const height = data.readUInt32BE(4);
+      if (width === 0 || height === 0
+        || width > MAX_ARTWORK_DIMENSION || height > MAX_ARTWORK_DIMENSION
+        || width * height > MAX_ARTWORK_PIXELS
+        || !data.subarray(8).equals(Buffer.from([8, 6, 0, 0, 0]))) return false;
+      sawHeader = true;
+    } else if (type === "IDAT" && !sawEnd) {
+      idatBytes += length;
+    } else if (type === "IEND" && length === 0 && idatBytes > 0 && !sawEnd) {
+      sawEnd = true;
+      if (end !== bytes.length) return false;
+    } else {
+      return false;
+    }
+    offset = end;
+  }
+  return sawHeader && idatBytes > 0 && sawEnd;
+}
+
+export function normalizeArtworkBundle(payload, expectedId) {
+  if (!ARTWORK_ID_PATTERN.test(String(expectedId || "")) || payload?.id !== expectedId) {
+    return null;
+  }
+  const color = artworkDataUri(payload.color);
+  const grayscale = artworkDataUri(payload.grayscale);
+  const tiles = Array.isArray(payload.tiles) && payload.tiles.length === 4
+    ? payload.tiles.map(artworkDataUri) : [];
+  if (!color || !grayscale || tiles.length !== 4 || !tiles.every(Boolean)) return null;
+  return Object.freeze({ id: expectedId, color, grayscale, tiles: Object.freeze(tiles) });
 }
 
 export function centeredTextPlacement(context, text, fontSize, center = 98) {
@@ -231,6 +306,7 @@ export class SpotifyGSMTCPlugin {
     this.progressRenderedAt = new Map();
     this.lastState = { online: false, available: false, audioAvailable: false,
       timelineAvailable: false, revision: 0 };
+    this.artworkBundle = null;
     this.pollTimer = null;
     this.animationTimer = null;
     this.polling = false;
@@ -345,6 +421,7 @@ export class SpotifyGSMTCPlugin {
     this.contexts.clear();
     this.rendered.clear();
     this.progressRenderedAt.clear();
+    this.artworkBundle = null;
   }
 
   async poll() {
@@ -356,13 +433,38 @@ export class SpotifyGSMTCPlugin {
         signal: AbortSignal.timeout(1000),
       });
       if (!response.ok) throw new Error("Bridge unavailable");
-      this.lastState = normalizeBridgeState(await response.json(), this.now());
+      const nextState = normalizeBridgeState(await response.json(), this.now());
+      const artworkChanged = nextState.artworkId !== this.lastState.artworkId;
+      this.lastState = nextState;
+      if (artworkChanged) {
+        this.artworkBundle = null;
+        this.renderAll();
+      }
+      if (nextState.artworkId && this.artworkBundle?.id !== nextState.artworkId) {
+        await this.fetchArtwork(nextState.artworkId);
+      }
       this.renderAll();
     } catch {
       this.setOffline();
     } finally {
       this.polling = false;
       this.manageAnimation();
+    }
+  }
+
+  async fetchArtwork(artworkId) {
+    try {
+      const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/artwork/${artworkId}`, {
+        method: "GET",
+        signal: AbortSignal.timeout(1000),
+      });
+      if (!response.ok) return false;
+      const bundle = normalizeArtworkBundle(await response.json(), artworkId);
+      if (!bundle || this.lastState.artworkId !== artworkId) return false;
+      this.artworkBundle = bundle;
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -374,6 +476,7 @@ export class SpotifyGSMTCPlugin {
   }
 
   setOffline() {
+    this.artworkBundle = null;
     this.lastState = { online: false, available: false, audioAvailable: false,
       timelineAvailable: false, revision: this.lastState.revision };
     this.renderAll();
@@ -444,8 +547,21 @@ export class SpotifyGSMTCPlugin {
       this.renderProgress(context, state, entry?.settings, entry?.mode, force);
       return;
     }
+    const mosaic = ACTIONS[action];
+    if (Number.isInteger(mosaic?.tile)) {
+      const bundle = this.artworkBundle?.id === state.artworkId ? this.artworkBundle : null;
+      const tile = state.online && state.available ? bundle?.tiles[mosaic.tile] : null;
+      const signature = tile || `${state.online}:${state.available}:${mosaic.icon}`;
+      if (this.rendered.get(context) === signature) return;
+      this.rendered.set(context, signature);
+      if (tile) this.sdk.setBaseDataIcon(context, tile, "");
+      else if (state.online === false) this.sdk.setPathIcon(context, "./assets/offline.svg", "Offline");
+      else this.sdk.setPathIcon(context, mosaic.icon, mosaic.title);
+      return;
+    }
     const signature = [state.online, state.available, state.audioAvailable, state.revision,
-      state.isPlaying, state.volumePercent, state.isMuted, state.audioMixed].join(":");
+      state.isPlaying, state.volumePercent, state.isMuted, state.audioMixed,
+      state.artworkId, this.artworkBundle?.id].join(":");
     if (this.rendered.get(context) === signature) return;
     this.rendered.set(context, signature);
 
@@ -472,10 +588,9 @@ export class SpotifyGSMTCPlugin {
     }
     if (action === "nowplaying") {
       const text = [state.title, state.artist].filter(Boolean).join("\n") || "Playing";
-      const colorArtwork = artworkDataUri(state.thumbnail);
-      const pausedArtwork = colorArtwork
-        ? artworkDataUri(state.thumbnailGrayscale) || colorArtwork
-        : null;
+      const bundle = this.artworkBundle?.id === state.artworkId ? this.artworkBundle : null;
+      const colorArtwork = bundle?.color || null;
+      const pausedArtwork = bundle?.grayscale || colorArtwork;
       const artwork = state.isPlaying ? colorArtwork : pausedArtwork;
       if (artwork) this.sdk.setBaseDataIcon(context, artwork, text);
       else this.sdk.setPathIcon(context, "./assets/music.svg", text);
