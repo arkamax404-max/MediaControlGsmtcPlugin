@@ -2,9 +2,9 @@
 
 ## Private Reporting
 
-SpotifyPip does not yet publish a verified private security contact. Before public launch, the maintainers must configure a private reporting channel and replace this temporary guidance with its exact location.
+Use [GitHub Private Vulnerability Reporting](https://github.com/arkamax404-max/spotify-d200-controller/security/advisories/new) to send vulnerability details securely to the repository maintainers.
 
-Until then, do not disclose vulnerability details in a public issue, discussion, pull request, or other public channel. Keep a sanitized report locally. If you already have an established private relationship with a maintainer, ask only where to send the report securely and do not include vulnerability details in that first message. If no private contact exists, retain the report until this policy names a verified channel.
+Do not disclose vulnerability details in a public issue, discussion, pull request, or other public channel.
 
 A useful private report should contain the affected component and version, impact, minimal reproduction steps, and any proposed mitigation.
 
@@ -16,4 +16,4 @@ Do not include private machine data or sensitive logs and screenshots in a repor
 
 Report privately when the behavior could expose private data, bypass the loopback-only boundary, execute unintended commands, or affect systems beyond the user's intended SpotifyPip operation.
 
-Crashes, display errors, setup problems, and incorrect behavior without a confidentiality, integrity, or boundary impact are ordinary bugs. They may be reported through the public issue tracker once one is available, using a minimal reproduction that contains no secrets.
+Crashes, display errors, setup problems, and incorrect behavior without a confidentiality, integrity, or boundary impact are ordinary bugs. Report them through the [public issue tracker](https://github.com/arkamax404-max/spotify-d200-controller/issues) using a minimal reproduction that contains no secrets.
