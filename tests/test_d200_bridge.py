@@ -1,14 +1,22 @@
 import asyncio
+import base64
+import io
 import json
 import sys
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import d200_bridge.__main__ as bridge_main
+import d200_bridge.artwork as artwork_module
+import d200_bridge.gsmtc as gsmtc_module
+from d200_bridge.artwork import ARTWORK_CACHE_SIZE, ArtworkProcessor, ArtworkVariants
+from d200_bridge.core_audio import AudioCommandResult
 from d200_bridge.gsmtc import (
     GSMTCAdapter,
     normalize_timeline_properties,
@@ -21,10 +29,38 @@ from d200_bridge.state import (
     MediaStateCache,
     normalize_state,
     normalize_timeline,
-    thumbnail_data_uri,
 )
-from d200_bridge.core_audio import AudioCommandResult
-import d200_bridge.__main__ as bridge_main
+
+try:
+    from PIL import Image, features
+except ImportError:
+    Image = None
+    features = None
+
+
+PILLOW_AVAILABLE = Image is not None
+PNG_HEADER_URI = "data:image/png;base64," + base64.b64encode(
+    b"\x89PNG\r\n\x1a\n"
+).decode("ascii")
+
+
+def image_bytes(image, image_format="PNG", **save_options):
+    output = io.BytesIO()
+    image.save(output, format=image_format, **save_options)
+    return output.getvalue()
+
+
+def data_uri_image(value):
+    encoded = value.split(",", 1)[1]
+    return Image.open(io.BytesIO(base64.b64decode(encoded)))
+
+
+def image_pixels(image):
+    return [
+        image.getpixel((x, y))
+        for y in range(image.height)
+        for x in range(image.width)
+    ]
 
 
 class StateTests(unittest.TestCase):
@@ -107,12 +143,211 @@ class StateTests(unittest.TestCase):
         self.assertEqual(fingerprint, cache.fingerprint())
         self.assertEqual(json.loads(json.dumps(second.public()))["title"], "Track")
 
-    def test_thumbnail_conversion_rejects_oversize_data(self):
-        self.assertEqual(
-            thumbnail_data_uri(b"cover", "image/png"),
-            "data:image/png;base64,Y292ZXI=",
+    def test_artwork_contract_includes_both_variants_and_falls_back_safely(self):
+        grayscale = "data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\ngray"
+        ).decode("ascii")
+        state = normalize_state({
+            "available": True,
+            "thumbnail": PNG_HEADER_URI,
+            "thumbnail_grayscale": grayscale,
+        })
+        self.assertEqual(state.thumbnail, PNG_HEADER_URI)
+        self.assertEqual(state.thumbnail_grayscale, grayscale)
+        self.assertEqual(state.public()["thumbnail_grayscale"], grayscale)
+
+        missing_gray = normalize_state({
+            "available": True,
+            "thumbnail": PNG_HEADER_URI,
+            "thumbnail_grayscale": "data:image/svg+xml;base64,PHN2Zy8+",
+        })
+        self.assertEqual(missing_gray.thumbnail, PNG_HEADER_URI)
+        self.assertIsNone(missing_gray.thumbnail_grayscale)
+
+        malformed_color = normalize_state({
+            "available": True,
+            "thumbnail": "data:image/png;base64,not-canonical",
+            "thumbnail_grayscale": grayscale,
+        })
+        self.assertIsNone(malformed_color.thumbnail)
+        self.assertIsNone(malformed_color.thumbnail_grayscale)
+
+
+class ArtworkCacheTests(unittest.TestCase):
+    def test_content_hash_cache_avoids_reprocessing_and_evicts_lru(self):
+        processor = ArtworkProcessor(cache_size=2)
+        variants = {
+            data: ArtworkVariants(f"color-{data!r}", f"gray-{data!r}")
+            for data in (b"one", b"two", b"three")
+        }
+        with patch.object(
+            processor,
+            "_decode_encode",
+            side_effect=lambda data: variants[data],
+        ) as decode:
+            self.assertEqual(processor.process(b"one"), variants[b"one"])
+            self.assertEqual(processor.process(b"one"), variants[b"one"])
+            self.assertEqual(processor.process(b"two"), variants[b"two"])
+            self.assertEqual(processor.process(b"one"), variants[b"one"])
+            self.assertEqual(processor.process(b"three"), variants[b"three"])
+            self.assertEqual(processor.process(b"two"), variants[b"two"])
+        self.assertEqual(decode.call_count, 4)
+        self.assertEqual(processor.cached_entries, 2)
+
+    def test_transient_failure_retries_then_caches_success(self):
+        processor = ArtworkProcessor()
+        success = ArtworkVariants("color", "grayscale")
+        with patch.object(
+            processor, "_decode_encode", side_effect=[None, success]
+        ) as decode:
+            self.assertIsNone(processor.process(b"same-content"))
+            self.assertEqual(processor.cached_entries, 0)
+            self.assertEqual(processor.process(b"same-content"), success)
+            self.assertEqual(processor.process(b"same-content"), success)
+        self.assertEqual(decode.call_count, 2)
+        self.assertEqual(processor.cached_entries, 1)
+
+    def test_default_cache_has_eight_entry_deterministic_lru_capacity(self):
+        self.assertEqual(ARTWORK_CACHE_SIZE, 8)
+        processor = ArtworkProcessor()
+
+        def variants(data):
+            return ArtworkVariants(f"color-{data!r}", f"gray-{data!r}")
+
+        with patch.object(processor, "_decode_encode", side_effect=variants) as decode:
+            for index in range(8):
+                processor.process(str(index).encode("ascii"))
+            self.assertEqual(processor.cached_entries, 8)
+            processor.process(b"0")
+            processor.process(b"8")
+            processor.process(b"0")
+            processor.process(b"1")
+        self.assertEqual(processor.cached_entries, 8)
+        self.assertEqual(decode.call_count, 10)
+
+    def test_same_content_concurrency_decodes_once_inside_lock(self):
+        processor = ArtworkProcessor()
+        success = ArtworkVariants("color", "grayscale")
+        decode_started = threading.Event()
+        second_attempting = threading.Event()
+        release_decode = threading.Event()
+
+        def decode(_data):
+            decode_started.set()
+            self.assertTrue(release_decode.wait(timeout=2))
+            return success
+
+        def second_call():
+            second_attempting.set()
+            return processor.process(b"same-content")
+
+        with patch.object(processor, "_decode_encode", side_effect=decode) as mocked:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(processor.process, b"same-content")
+                self.assertTrue(decode_started.wait(timeout=2))
+                second = executor.submit(second_call)
+                self.assertTrue(second_attempting.wait(timeout=2))
+                release_decode.set()
+                self.assertEqual(first.result(timeout=2), success)
+                self.assertEqual(second.result(timeout=2), success)
+        self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(processor.cached_entries, 1)
+
+
+@unittest.skipUnless(PILLOW_AVAILABLE, "Pillow is not installed")
+class ArtworkProcessorTests(unittest.TestCase):
+    def asymmetric_png(self):
+        image = Image.new("RGBA", (3, 2))
+        image.putdata([
+            (255, 0, 0, 10), (0, 255, 0, 40), (0, 0, 255, 70),
+            (250, 120, 10, 100), (20, 40, 80, 160), (240, 30, 180, 220),
+        ])
+        return image_bytes(image)
+
+    def test_outputs_matching_png_frames_with_alpha_and_pixel_positions_preserved(self):
+        result = ArtworkProcessor().process(self.asymmetric_png())
+        color = data_uri_image(result.color).convert("RGBA")
+        grayscale = data_uri_image(result.grayscale).convert("RGBA")
+
+        self.assertTrue(result.color.startswith("data:image/png;base64,"))
+        self.assertTrue(result.grayscale.startswith("data:image/png;base64,"))
+        self.assertEqual(color.size, (3, 2))
+        self.assertEqual(grayscale.size, color.size)
+        expected = image_pixels(
+            Image.open(io.BytesIO(self.asymmetric_png())).convert("RGBA")
         )
-        self.assertIsNone(thumbnail_data_uri(b"x" * 1_000_001))
+        self.assertEqual(image_pixels(color), expected)
+        self.assertEqual(
+            [pixel[3] for pixel in image_pixels(grayscale)],
+            [pixel[3] for pixel in image_pixels(color)],
+        )
+        self.assertNotEqual(color.getpixel((0, 0))[0], color.getpixel((0, 0))[1])
+        for pixel in image_pixels(grayscale):
+            self.assertEqual(pixel[0], pixel[1])
+            self.assertEqual(pixel[1], pixel[2])
+        self.assertNotEqual(color.getpixel((0, 0)), color.getpixel((2, 1)))
+
+    def test_applies_exif_orientation_identically(self):
+        source = Image.new("RGB", (2, 3))
+        source.putdata([
+            (255, 0, 0), (0, 255, 0),
+            (0, 0, 255), (255, 255, 0),
+            (255, 0, 255), (0, 255, 255),
+        ])
+        exif = source.getexif()
+        exif[274] = 6
+        result = ArtworkProcessor().process(
+            image_bytes(source, "JPEG", exif=exif, quality=100, subsampling=0)
+        )
+        color = data_uri_image(result.color)
+        grayscale = data_uri_image(result.grayscale)
+        self.assertEqual(color.size, (3, 2))
+        self.assertEqual(grayscale.size, color.size)
+
+    def test_animated_gif_uses_first_frame(self):
+        first = Image.new("RGBA", (2, 1))
+        first.putdata([(255, 0, 0, 255), (0, 255, 0, 255)])
+        second = Image.new("RGBA", (2, 1), (0, 0, 255, 255))
+        source = image_bytes(first, "GIF", save_all=True, append_images=[second], loop=0)
+        result = ArtworkProcessor().process(source)
+        color = data_uri_image(result.color).convert("RGBA")
+        self.assertEqual(image_pixels(color), image_pixels(first))
+
+    @unittest.skipUnless(
+        PILLOW_AVAILABLE and features.check("webp"), "Pillow WebP codec is unavailable"
+    )
+    def test_animated_webp_uses_first_frame(self):
+        first = Image.new("RGBA", (2, 1))
+        first.putdata([(255, 0, 0, 255), (0, 255, 0, 255)])
+        second = Image.new("RGBA", (2, 1), (0, 0, 255, 255))
+        try:
+            source = image_bytes(
+                first, "WEBP", save_all=True, append_images=[second], loop=0,
+                lossless=True,
+            )
+        except OSError as error:
+            self.skipTest(f"Pillow WebP animation codec is unavailable: {error}")
+        result = ArtworkProcessor().process(source)
+        color = data_uri_image(result.color).convert("RGBA")
+        self.assertEqual(image_pixels(color), image_pixels(first))
+
+    def test_rejects_malformed_truncated_svg_disguised_and_resource_excesses(self):
+        valid = self.asymmetric_png()
+        bmp = image_bytes(Image.new("RGB", (1, 1)), "BMP")
+        rejected = [
+            b"", valid[:-10], b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+            b"\x89PNG\r\n\x1a\n<svg/>", bmp,
+        ]
+        processor = ArtworkProcessor()
+        for source in rejected:
+            self.assertIsNone(processor.process(source))
+        self.assertIsNone(
+            ArtworkProcessor(max_source_bytes=len(valid) - 1).process(valid)
+        )
+        self.assertIsNone(ArtworkProcessor(max_decoded_pixels=5).process(valid))
+        self.assertIsNone(ArtworkProcessor(max_encoded_bytes=10).process(valid))
+        with patch.object(artwork_module.Image, "MAX_IMAGE_PIXELS", 1):
+            self.assertIsNone(ArtworkProcessor().process(valid))
 
 
 class FakeStream:
@@ -203,9 +438,13 @@ class ThumbnailStreamTests(unittest.IsolatedAsyncioTestCase):
             "winrt.windows.storage": windows.storage,
             "winrt.windows.storage.streams": streams,
         }
-        with patch.dict(sys.modules, modules):
+        variants = ArtworkVariants(PNG_HEADER_URI, PNG_HEADER_URI)
+        with patch.dict(sys.modules, modules), patch.object(
+            gsmtc_module.artwork_processor, "process", return_value=variants
+        ) as process:
             result = await read_thumbnail(FakeStreamReference())
-        self.assertEqual(result, "data:image/png;base64,Y292ZXI=")
+        self.assertEqual(result, variants)
+        process.assert_called_once_with(b"cover")
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):

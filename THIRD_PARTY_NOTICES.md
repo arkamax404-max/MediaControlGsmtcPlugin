@@ -24,6 +24,7 @@ project material.
 
 The direct Python requirements are recorded in `requirements.txt`:
 
+- `Pillow>=11.0.0`
 - `winrt-Windows.Foundation==3.2.1` on Windows
 - `winrt-Windows.Foundation.Collections==3.2.1` on Windows
 - `winrt-Windows.Media.Control==3.2.1` on Windows
@@ -32,9 +33,14 @@ The direct Python requirements are recorded in `requirements.txt`:
 - `comtypes==1.4.16` on Windows
 - `psutil==7.2.2` on Windows
 
+The locally installed Pillow 12.2.0 distribution reports the SPDX license
+expression `MIT-CMU` in its package metadata. This establishes the local
+Pillow distribution's declared license, but not the metadata of every version
+allowed by the non-locking requirement or its optional binary codecs.
+
 `requirements.txt` contains no license fields and the repository has no Python
-lockfile or copied license metadata for these distributions. Their license
-status, and the complete set of their transitive dependencies, therefore
+lockfile or copied license metadata for the other Python distributions. Their
+license status, and the complete set of transitive dependencies, therefore
 cannot be established from repository files alone. Installed distributions
 retain their respective license terms.
 

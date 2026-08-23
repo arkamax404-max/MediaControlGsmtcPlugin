@@ -8,6 +8,7 @@ import {
   DEFAULT_PROGRESS_SETTINGS,
   SpotifyGSMTCPlugin,
   actionFromEvent,
+  artworkDataUri,
   centeredTextPlacement,
   escapeXml,
   extrapolatePosition,
@@ -24,6 +25,9 @@ import {
   normalizeInspectorSettings,
   serializeInspectorSettings,
 } from "../property-inspector/progress/inspector.js";
+
+const PNG_ARTWORK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn6HhvwMAELoDvkeWIKAAAAAASUVORK5CYII=";
+const GRAYSCALE_ARTWORK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP08fH5LyMj4wgADIYCeqb1R30AAAAASUVORK5CYII=";
 
 function createSdk() {
   const calls = [];
@@ -52,7 +56,8 @@ function state(overrides = {}) {
     is_playing: true,
     title: "Track",
     artist: "Artist",
-    thumbnail: "data:image/png;base64,Y292ZXI=",
+    thumbnail: PNG_ARTWORK,
+    thumbnail_grayscale: GRAYSCALE_ARTWORK,
     audio_available: true,
     volume_percent: 65,
     is_muted: false,
@@ -69,6 +74,9 @@ function state(overrides = {}) {
 }
 
 test("maps all eight declared action UUIDs without changing existing UUIDs", () => {
+  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.nowplaying" }), "nowplaying");
+  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.previous" }), "previous");
+  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.toggle" }), "toggle");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.next" }), "next");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume-up" }), "volume-up");
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume-down" }), "volume-down");
@@ -503,17 +511,108 @@ test("inspector normalization and serialization match plugin settings", () => {
   assert.deepEqual(normalizeProgressSettings({ strokeWidth: Number.NaN }), DEFAULT_PROGRESS_SETTINGS);
 });
 
-test("renders dynamic cover payload and deduplicates the same revision", () => {
+test("sends direct color and grayscale PNGs and restores the identical color URI", () => {
   const sdk = createSdk();
   const plugin = new SpotifyGSMTCPlugin({ sdk });
   plugin.contexts.set("cover", "nowplaying");
+  const thumbnail = PNG_ARTWORK;
   const current = {
     available: true, revision: 9, isPlaying: true,
-    title: "Track", artist: "Artist", thumbnail: "data:image/png;base64,YQ==",
+    title: "Track", artist: "Artist", thumbnail,
+    thumbnailGrayscale: GRAYSCALE_ARTWORK,
   };
   plugin.render("cover", "nowplaying", current);
   plugin.render("cover", "nowplaying", current);
-  assert.deepEqual(sdk.calls, [["base64", "cover", current.thumbnail, "Track\nArtist"]]);
+  plugin.render("cover", "nowplaying", { ...current, isPlaying: false });
+  plugin.render("cover", "nowplaying", current);
+
+  assert.equal(current.thumbnail, thumbnail, "the bridge payload remains untouched");
+  assert.deepEqual(sdk.calls[0], ["base64", "cover", thumbnail, "Track\nArtist"]);
+  assert.deepEqual(sdk.calls[1], ["base64", "cover", GRAYSCALE_ARTWORK, "Track\nArtist"]);
+  assert.deepEqual(sdk.calls[2], ["base64", "cover", thumbnail, "Track\nArtist"]);
+  assert.ok(sdk.calls.every(([, , uri]) => !uri.startsWith("data:image/svg+xml")));
+});
+
+test("accepts only canonical bounded PNG bridge artwork byte-for-byte", () => {
+  assert.equal(artworkDataUri(PNG_ARTWORK), PNG_ARTWORK);
+  assert.equal(artworkDataUri(GRAYSCALE_ARTWORK), GRAYSCALE_ARTWORK);
+});
+
+test("rejects malformed or disguised artwork into the existing fallback", () => {
+  const script = Buffer.from("<script>alert(1)</script>").toString("base64");
+  const svg = Buffer.from("<svg><script/></svg>").toString("base64");
+  const invalidArtwork = [
+    "https://remote.invalid/cover.png",
+    "javascript:alert(1)",
+    `data:image/svg+xml;base64,${svg}`,
+    `data:image/bmp;base64,${Buffer.from("BM").toString("base64")}`,
+    `data:image/jpeg;base64,${Buffer.from([0xFF, 0xD8, 0xFF]).toString("base64")}`,
+    `data:image/gif;base64,${Buffer.from("GIF89a", "ascii").toString("base64")}`,
+    `data:image/webp;base64,${Buffer.from("RIFF0000WEBP", "ascii").toString("base64")}`,
+    `data:image/PNG;base64,${PNG_ARTWORK.split(",")[1]}`,
+    `data:image/png;charset=utf-8;base64,${PNG_ARTWORK.split(",")[1]}`,
+    `data:image/png;base64, ${PNG_ARTWORK.split(",")[1]}`,
+    "data:image/png;base64,",
+    "data:image/png;base64,AB==",
+    "data:image/png;base64,@@@@",
+    'data:image/png;base64,iVBORw0KGgo=" onload="alert(1)',
+    'data:image/png;base64,iVBORw0KGgo="><script>alert(1)</script>',
+    `data:image/png;base64,${script}`,
+    `data:image/jpeg;base64,${script}`,
+    `data:image/gif;base64,${script}`,
+    `data:image/webp;base64,${script}`,
+    `data:image/png;base64,${"A".repeat(1_333_340)}`,
+  ];
+  const sdk = createSdk();
+  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  for (const [revision, thumbnail] of invalidArtwork.entries()) {
+    assert.equal(artworkDataUri(thumbnail), null);
+    plugin.render(`cover-${revision}`, "nowplaying", {
+      online: true, available: true, revision, isPlaying: false,
+      title: "Track", artist: "Artist", thumbnail,
+    });
+  }
+  assert.equal(sdk.calls.length, invalidArtwork.length);
+  assert.ok(sdk.calls.every(([type, , path, text]) => type === "path"
+    && path === "./assets/music.svg" && text === "Track\nArtist"));
+});
+
+test("falls back to the direct color PNG when paused grayscale is missing or invalid", () => {
+  const sdk = createSdk();
+  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  for (const [context, thumbnailGrayscale] of [
+    ["missing", null],
+    ["invalid", "data:image/svg+xml;base64,PHN2Zy8+"],
+  ]) {
+    plugin.render(context, "nowplaying", {
+      online: true, available: true, revision: 1, isPlaying: false,
+      title: "Paused Track", artist: "Artist", thumbnail: PNG_ARTWORK,
+      thumbnailGrayscale,
+    });
+  }
+  assert.deepEqual(sdk.calls, [
+    ["base64", "missing", PNG_ARTWORK, "Paused Track\nArtist"],
+    ["base64", "invalid", PNG_ARTWORK, "Paused Track\nArtist"],
+  ]);
+});
+
+test("normalizes both artwork fields independently at the plugin boundary", () => {
+  const now = Date.parse("2026-08-23T12:00:01.000Z");
+  const valid = normalizeBridgeState(state(), now);
+  assert.equal(valid.thumbnail, PNG_ARTWORK);
+  assert.equal(valid.thumbnailGrayscale, GRAYSCALE_ARTWORK);
+
+  const invalidGray = normalizeBridgeState(state({
+    thumbnail_grayscale: "data:image/svg+xml;base64,PHN2Zy8+",
+  }), now);
+  assert.equal(invalidGray.thumbnail, PNG_ARTWORK);
+  assert.equal(invalidGray.thumbnailGrayscale, null);
+
+  const invalidColor = normalizeBridgeState(state({
+    thumbnail: "data:image/png;base64,not-canonical",
+  }), now);
+  assert.equal(invalidColor.thumbnail, null);
+  assert.equal(invalidColor.thumbnailGrayscale, null);
 });
 
 test("uses one quiet offline fallback and recovers", async () => {
@@ -536,22 +635,85 @@ test("uses one quiet offline fallback and recovers", async () => {
   assert.equal(sdk.calls.at(-1)[0], "base64");
 });
 
-test("targets commands and polling only at the fixed loopback bridge", async () => {
+test("routes nowplaying and toggle through shared toggle flow and rerenders polled state", async () => {
   const sdk = createSdk();
   const requests = [];
   const plugin = new SpotifyGSMTCPlugin({
     sdk,
     fetchImpl: async (url, options) => {
       requests.push([url, options.method]);
+      return { ok: true, async json() { return state({ is_playing: false, revision: 5 }); } };
+    },
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"),
+  });
+  plugin.contexts.set("cover-key", "nowplaying");
+  plugin.contexts.set("toggle-key", "toggle");
+  plugin.lastState = normalizeBridgeState(
+    state(), Date.parse("2026-08-23T12:00:01.000Z"),
+  );
+  plugin.renderAll();
+  await plugin.run({ context: "cover-key" });
+  assert.equal(plugin.lastState.isPlaying, false);
+  const pausedUri = sdk.calls.findLast(([type, context]) => (
+    type === "base64" && context === "cover-key"
+  ))[2];
+  assert.equal(pausedUri, GRAYSCALE_ARTWORK);
+  await plugin.run({ context: "toggle-key" });
+  assert.deepEqual(requests, [
+    [`${BRIDGE_ORIGIN}/command/toggle`, "POST"],
+    [`${BRIDGE_ORIGIN}/state`, "GET"],
+    [`${BRIDGE_ORIGIN}/command/toggle`, "POST"],
+    [`${BRIDGE_ORIGIN}/state`, "GET"],
+  ]);
+});
+
+test("failed toggle commands preserve last state and rendered output", async () => {
+  for (const [action, failure] of [
+    ["nowplaying", "non-ok"], ["nowplaying", "exception"],
+    ["toggle", "non-ok"], ["toggle", "exception"],
+  ]) {
+    const sdk = createSdk();
+    const plugin = new SpotifyGSMTCPlugin({
+      sdk,
+      fetchImpl: async () => {
+        if (failure === "exception") throw new Error("command unavailable");
+        return { ok: false };
+      },
+    });
+    plugin.contexts.set("control", action);
+    plugin.lastState = {
+      online: true, available: true, revision: 9, isPlaying: true,
+      title: "Track", artist: "Artist", thumbnail: PNG_ARTWORK,
+    };
+    plugin.renderAll();
+    const previousState = plugin.lastState;
+    const previousCalls = structuredClone(sdk.calls);
+
+    const scenario = `${action} ${failure}`;
+    assert.equal(await plugin.run({ context: "control" }), false, scenario);
+    assert.equal(plugin.lastState, previousState, scenario);
+    assert.deepEqual(sdk.calls, previousCalls, scenario);
+  }
+});
+
+test("preserves unrelated transport command behavior", async () => {
+  const requests = [];
+  const plugin = new SpotifyGSMTCPlugin({
+    sdk: createSdk(),
+    fetchImpl: async (url, options) => {
+      requests.push([url, options.method]);
       return { ok: true, async json() { return state(); } };
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
-  plugin.contexts.set("next-key", "next");
-  await plugin.run({ context: "next-key" });
-  assert.deepEqual(requests, [
+  for (const action of ["previous", "next"]) {
+    plugin.contexts.clear();
+    plugin.contexts.set(action, action);
+    await plugin.run({ context: action });
+  }
+  assert.deepEqual(requests.filter(([, method]) => method === "POST"), [
+    [`${BRIDGE_ORIGIN}/command/previous`, "POST"],
     [`${BRIDGE_ORIGIN}/command/next`, "POST"],
-    [`${BRIDGE_ORIGIN}/state`, "GET"],
   ]);
 });
 

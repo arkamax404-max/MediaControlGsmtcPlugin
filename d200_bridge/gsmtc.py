@@ -2,7 +2,7 @@ import asyncio
 import math
 from datetime import datetime, timedelta, timezone
 
-from .state import MAX_THUMBNAIL_BYTES, thumbnail_data_uri
+from .artwork import MAX_SOURCE_BYTES, artwork_processor
 
 
 SPOTIFY_IDENTIFIERS = ("spotify.exe", "spotifyab.spotifymusic")
@@ -75,7 +75,7 @@ async def read_thumbnail(stream_reference):
         return None
     stream = await stream_reference.open_read_async()
     size = int(stream.size)
-    if size <= 0 or size > MAX_THUMBNAIL_BYTES:
+    if size <= 0 or size > MAX_SOURCE_BYTES:
         stream.close()
         return None
 
@@ -86,8 +86,7 @@ async def read_thumbnail(stream_reference):
         await reader.load_async(size)
         data = bytearray(size)
         reader.read_bytes(data)
-        content_type = getattr(stream, "content_type", "image/jpeg")
-        return thumbnail_data_uri(bytes(data), content_type)
+        return await asyncio.to_thread(artwork_processor.process, bytes(data))
     finally:
         reader.close()
         stream.close()
@@ -150,7 +149,7 @@ class GSMTCAdapter:
                 properties = await session.try_get_media_properties_async()
                 playback = session.get_playback_info()
                 status = getattr(playback, "playback_status", None)
-                thumbnail = await self._thumbnail_reader(
+                artwork = await self._thumbnail_reader(
                     getattr(properties, "thumbnail", None)
                 )
                 timeline = normalize_timeline_properties(
@@ -162,7 +161,8 @@ class GSMTCAdapter:
                         "is_playing": self._is_playing(status),
                         "title": getattr(properties, "title", ""),
                         "artist": getattr(properties, "artist", ""),
-                        "thumbnail": thumbnail,
+                        "thumbnail": artwork.color if artwork else None,
+                        "thumbnail_grayscale": artwork.grayscale if artwork else None,
                         "source": getattr(session, "source_app_user_model_id", ""),
                         **timeline,
                     }

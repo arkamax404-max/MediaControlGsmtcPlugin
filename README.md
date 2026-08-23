@@ -11,7 +11,7 @@ Python 3.11 or newer, and Node.js 20.12.2 or newer with npm. Python 3.11 is
 the current minimum because the bridge uses the 3.11 `asyncio.wait_for`
 `TimeoutError` behavior in addition to Python 3.10 syntax. Core Audio support
 is pinned to `pycaw==20251023`, `comtypes==1.4.16`, and `psutil==7.2.2` on
-Windows.
+Windows. Pillow processes GSMTC artwork locally in memory.
 
 1. Confirm the supported tool versions from the project root:
 
@@ -84,10 +84,13 @@ Windows.
    width. Each key instance keeps its own settings. Native color inputs and
    visible HEX fields are both available.
 
-The now-playing key displays the GSMTC thumbnail with title and artist. If artwork is
-missing it uses a bundled music icon. Controls operate the Spotify Desktop GSMTC
-session when present, otherwise the current Windows media session. The play/pause key
-tracks local playback state.
+The now-playing key displays the GSMTC thumbnail with title and artist. It uses
+the bridge's color PNG while playing and its matching grayscale PNG while paused;
+if the grayscale variant is unavailable, it keeps the color PNG and title text
+without changing framing. If artwork is missing it uses a bundled music icon.
+Artwork processing stays in memory and makes no remote API request. Controls
+operate the Spotify Desktop GSMTC session when present, otherwise the current
+Windows media session. The play/pause key tracks local playback state.
 
 The volume actions operate only on Core Audio sessions owned by `Spotify.exe`.
 They never change the Windows master volume, endpoint volume, other applications,

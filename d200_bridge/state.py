@@ -9,19 +9,26 @@ from datetime import datetime, timezone
 
 MAX_TEXT_LENGTH = 160
 MAX_THUMBNAIL_BYTES = 1_000_000
+PNG_DATA_URI_PREFIX = "data:image/png;base64,"
 
 
 def _text(value):
     return str(value or "").strip()[:MAX_TEXT_LENGTH]
 
 
-def thumbnail_data_uri(data, content_type="image/jpeg"):
-    if not data or len(data) > MAX_THUMBNAIL_BYTES:
+def _png_data_uri(value):
+    if not isinstance(value, str) or not value.startswith(PNG_DATA_URI_PREFIX):
         return None
-    if not str(content_type).startswith("image/"):
-        content_type = "image/jpeg"
-    encoded = base64.b64encode(data).decode("ascii")
-    return f"data:{content_type};base64,{encoded}"
+    encoded = value[len(PNG_DATA_URI_PREFIX):]
+    if not encoded or len(encoded) % 4 or len(encoded) > 4 * math.ceil(MAX_THUMBNAIL_BYTES / 3):
+        return None
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if len(data) > MAX_THUMBNAIL_BYTES or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    return value if base64.b64encode(data).decode("ascii") == encoded else None
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,7 @@ class MediaState:
     title: str = ""
     artist: str = ""
     thumbnail: str | None = None
+    thumbnail_grayscale: str | None = None
     source: str = ""
     timeline_available: bool = False
     position_seconds: float = 0.0
@@ -52,6 +60,7 @@ class MediaState:
             "title": self.title,
             "artist": self.artist,
             "thumbnail": self.thumbnail,
+            "thumbnail_grayscale": self.thumbnail_grayscale,
             "source": self.source,
             "timeline_available": self.timeline_available,
             "position_seconds": self.position_seconds,
@@ -101,13 +110,15 @@ def normalize_timeline(raw):
 
 def normalize_state(raw):
     timeline = normalize_timeline(raw)
+    thumbnail = _png_data_uri(raw.get("thumbnail"))
     return MediaState(
         available=bool(raw.get("available")),
         is_playing=bool(raw.get("is_playing")) if raw.get("available") else False,
         title=_text(raw.get("title")),
         artist=_text(raw.get("artist")),
-        thumbnail=raw.get("thumbnail")
-        if str(raw.get("thumbnail") or "").startswith("data:image/")
+        thumbnail=thumbnail,
+        thumbnail_grayscale=_png_data_uri(raw.get("thumbnail_grayscale"))
+        if thumbnail
         else None,
         source=_text(raw.get("source")),
         **timeline,

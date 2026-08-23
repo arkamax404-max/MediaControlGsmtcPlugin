@@ -12,7 +12,7 @@ export const DEFAULT_PROGRESS_SETTINGS = Object.freeze({
 });
 
 const ACTIONS = Object.freeze({
-  nowplaying: { command: null, icon: "./assets/music.svg" },
+  nowplaying: { command: "toggle", icon: "./assets/music.svg" },
   previous: { command: "previous", icon: "./assets/previous.svg" },
   toggle: { command: "toggle", icon: "./assets/play.svg" },
   next: { command: "next", icon: "./assets/next.svg" },
@@ -23,6 +23,9 @@ const ACTIONS = Object.freeze({
 });
 
 const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
+const ARTWORK_PATTERN = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/;
+const MAX_ARTWORK_BYTES = 1_000_000;
+const MAX_ARTWORK_BASE64_LENGTH = 4 * Math.ceil(MAX_ARTWORK_BYTES / 3);
 const PROGRESS_MODES = Object.freeze(["remaining", "elapsed", "total"]);
 
 export function actionFromEvent(event) {
@@ -63,6 +66,7 @@ export function normalizeBridgeState(payload, now = Date.now()) {
   const positionUpdatedAt = Date.parse(payload.position_updated_at || "");
   const timelineAvailable = payload.timeline_available === true
     && duration > 0 && position >= 0 && Number.isFinite(positionUpdatedAt);
+  const thumbnail = artworkDataUri(payload.thumbnail);
   return {
     online: true,
     available: payload.available === true,
@@ -70,9 +74,8 @@ export function normalizeBridgeState(payload, now = Date.now()) {
     isPlaying: payload.available === true && payload.is_playing === true,
     title: String(payload.title || "").trim().slice(0, 48),
     artist: String(payload.artist || "").trim().slice(0, 48),
-    thumbnail: String(payload.thumbnail || "").startsWith("data:image/")
-      ? payload.thumbnail
-      : null,
+    thumbnail,
+    thumbnailGrayscale: thumbnail ? artworkDataUri(payload.thumbnail_grayscale) : null,
     audioAvailable: payload.audio_available === true,
     volumePercent: Number.isInteger(payload.volume_percent)
       ? Math.max(0, Math.min(100, payload.volume_percent))
@@ -127,6 +130,21 @@ export function escapeXml(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
   })[character]);
+}
+
+export function artworkDataUri(value) {
+  const artwork = typeof value === "string" ? value : "";
+  const match = artwork.match(ARTWORK_PATTERN);
+  if (!match) return null;
+  const [, encoded] = match;
+  if (encoded.length % 4 !== 0 || encoded.length > MAX_ARTWORK_BASE64_LENGTH) return null;
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length === 0 || bytes.length > MAX_ARTWORK_BYTES
+    || bytes.toString("base64") !== encoded) return null;
+  const validSignature = bytes.length >= 8 && bytes.subarray(0, 8).equals(
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+  );
+  return validSignature ? artwork : null;
 }
 
 export function centeredTextPlacement(context, text, fontSize, center = 98) {
@@ -310,7 +328,6 @@ export class SpotifyGSMTCPlugin {
       await this.poll();
       return true;
     } catch {
-      this.setOffline();
       return false;
     }
   }
@@ -455,7 +472,12 @@ export class SpotifyGSMTCPlugin {
     }
     if (action === "nowplaying") {
       const text = [state.title, state.artist].filter(Boolean).join("\n") || "Playing";
-      if (state.thumbnail) this.sdk.setBaseDataIcon(context, state.thumbnail, text);
+      const colorArtwork = artworkDataUri(state.thumbnail);
+      const pausedArtwork = colorArtwork
+        ? artworkDataUri(state.thumbnailGrayscale) || colorArtwork
+        : null;
+      const artwork = state.isPlaying ? colorArtwork : pausedArtwork;
+      if (artwork) this.sdk.setBaseDataIcon(context, artwork, text);
       else this.sdk.setPathIcon(context, "./assets/music.svg", text);
       return;
     }
