@@ -1,0 +1,22 @@
+Official Ulanzi plugin-common-node runtime files.
+Repository: https://github.com/UlanziTechnology/plugin-common-node
+Commit: 112bd13a7ff9d45bd68656f7e069fd61851d1812
+License: Apache-2.0 (see LICENSE)
+Vendored files: libs/constants.js, libs/utils.js, libs/ulanziApi.js
+
+Official Ulanzi Property Inspector runtime files.
+Repository: https://github.com/UlanziTechnology/plugin-common-html
+SDK submodule pin: https://github.com/UlanziTechnology/UlanziDeckPlugin-SDK/commit/550ab80c69285ecf259bd494a7fff767c14f0c0f
+Commit: 79de0b0b087546e684afd23f97223f7a7bc392da
+Revision: https://github.com/UlanziTechnology/plugin-common-html/commit/79de0b0b087546e684afd23f97223f7a7bc392da
+License: Apache-2.0 for the five exact, unmodified vendored files listed below
+License evidence: upstream root LICENSE at this revision, SHA-256 c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4
+Local license: LICENSE (byte-identical to the upstream root LICENSE)
+Notice: no NOTICE file in the upstream tree at this revision and no additional embedded notices in these five files
+Protocol: Ulanzi JS Plugin Development Protocol V2.1.2 (compatible with Studio 3.1.9)
+Vendored files and SHA-256:
+html/js/constants.js 4d6581c19e34379cf28f4c56835545a81f8c036e4395f40f1e449debdb57302e
+html/js/eventEmitter.js 1167eaf1c4dce87942186bd35042851a3925ba8f19932dbd42e8050f991027c5
+html/js/timers.js 3b6948510c2136d8e58c9337682fbcd7d02aad8d67a5befa7bd1691e897aaae2
+html/js/utils.js 6f13551f6e2d771401e2ddf8763d22d692b5ecfc0dd2ddcaa4ddde5e7274691e
+html/js/ulanziApi.js ebd369d1616ef77d93701ecd0ddf95f0c1dc1e4e248aa6c3e3db5f68d250112b

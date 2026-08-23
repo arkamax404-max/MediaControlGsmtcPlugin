@@ -1,0 +1,9 @@
+# Python >=3.11 is required by the current bridge implementation.
+# This file is the canonical Python dependency input; it is not a resolved lock.
+winrt-Windows.Foundation==3.2.1; sys_platform == "win32"
+winrt-Windows.Foundation.Collections==3.2.1; sys_platform == "win32"
+winrt-Windows.Media.Control==3.2.1; sys_platform == "win32"
+winrt-Windows.Storage.Streams==3.2.1; sys_platform == "win32"
+pycaw==20251023; sys_platform == "win32"
+comtypes==1.4.16; sys_platform == "win32"
+psutil==7.2.2; sys_platform == "win32"

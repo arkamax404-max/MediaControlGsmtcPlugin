@@ -1,0 +1,2 @@
+# Preserve byte-exact vendored SDK files and their recorded checksums.
+plugin/com.ulanzi.spotifygsm.ulanziPlugin/vendor/ulanzi-sdk/** -text

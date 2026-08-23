@@ -1,0 +1,112 @@
+{
+  "Version": "1.2.0",
+  "Author": "SpotifyPip",
+  "Name": "Spotify GSMTC",
+  "Description": "Local Windows now-playing display and media controls",
+  "Icon": "assets/music.svg",
+  "Category": "Spotify GSMTC",
+  "CategoryIcon": "assets/music.svg",
+  "CodePath": "src/app.js",
+  "Type": "JavaScript",
+  "PrivateAPI": false,
+  "UUID": "com.ulanzi.ulanzistudio.spotifygsm",
+  "Actions": [
+    {
+      "Name": "Now Playing",
+      "Icon": "assets/music.svg",
+      "States": [{ "Name": "Now Playing", "Image": "assets/music.svg" }],
+      "Tooltip": "Show the current cover, title, and artist",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.nowplaying",
+      "SupportedInMultiActions": false,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Previous",
+      "Icon": "assets/previous.svg",
+      "States": [{ "Name": "Previous", "Image": "assets/previous.svg" }],
+      "Tooltip": "Previous track",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.previous",
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Play/Pause",
+      "Icon": "assets/play.svg",
+      "States": [
+        { "Name": "Play", "Image": "assets/play.svg" },
+        { "Name": "Pause", "Image": "assets/pause.svg" }
+      ],
+      "Tooltip": "Toggle play or pause",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.toggle",
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Next",
+      "Icon": "assets/next.svg",
+      "States": [{ "Name": "Next", "Image": "assets/next.svg" }],
+      "Tooltip": "Next track",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.next",
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Volume Up",
+      "Icon": "assets/volume-up.svg",
+      "States": [{ "Name": "Volume Up", "Image": "assets/volume-up.svg" }],
+      "Tooltip": "Increase Spotify Desktop volume by 5%",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.volume-up",
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Volume Down",
+      "Icon": "assets/volume-down.svg",
+      "States": [{ "Name": "Volume Down", "Image": "assets/volume-down.svg" }],
+      "Tooltip": "Decrease Spotify Desktop volume by 5%",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.volume-down",
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Mute Toggle",
+      "Icon": "assets/mute.svg",
+      "States": [
+        { "Name": "Mute", "Image": "assets/mute.svg" },
+        { "Name": "Unmute", "Image": "assets/unmute.svg" }
+      ],
+      "Tooltip": "Toggle mute for Spotify Desktop",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.mute-toggle",
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    },
+    {
+      "Name": "Track Progress",
+      "Icon": "assets/progress.svg",
+      "PropertyInspectorPath": "property-inspector/progress/inspector.html",
+      "States": [{ "Name": "Track Progress", "Image": "assets/progress.svg" }],
+      "Tooltip": "Show circular track progress and remaining time",
+      "UUID": "com.ulanzi.ulanzistudio.spotifygsm.progress",
+      "SupportedInMultiActions": false,
+      "DisableAutomaticStates": true,
+      "Controllers": ["Keypad"],
+      "Devices": ["D200"]
+    }
+  ],
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "Software": { "MinVersion": "2.1.4" }
+}
