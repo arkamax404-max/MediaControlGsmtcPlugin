@@ -1,9 +1,12 @@
 import asyncio
+import hmac
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .artwork import MAX_BUNDLE_BYTES
+from .lifecycle import CompanionLifecycle
+from .paths import validate_token
 
 
 BRIDGE_HOST = "127.0.0.1"
@@ -25,16 +28,22 @@ AUDIO_COMMAND_PATHS = {
 
 def create_server(
     cache, commander, loop, host=BRIDGE_HOST, port=BRIDGE_PORT, audio_commander=None,
-    artwork_lookup=None,
+    artwork_lookup=None, token=None, lifecycle=None, request_stop=None,
 ):
     if host != BRIDGE_HOST:
         raise ValueError("The D200 bridge may only bind to 127.0.0.1")
 
+    validate_token(token)
+    lifecycle = lifecycle or CompanionLifecycle()
+
     class BridgeHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/health":
-                self._json(200, {"ok": True, "service": "d200-gsmtc-bridge"})
-            elif self.path == "/state":
+                self._json(200, lifecycle.health(), max_bytes=512)
+                return
+            if self._protected() and not self._authorized():
+                return
+            if self.path == "/state":
                 self._json(200, cache.get().public(), max_bytes=MAX_STATE_RESPONSE_BYTES)
             else:
                 match = ARTWORK_PATH_PATTERN.fullmatch(self.path)
@@ -44,10 +53,23 @@ def create_server(
                     self._json(404, {"error": "not_found"})
 
         def do_POST(self):
+            if self._protected() and not self._authorized():
+                return
+            if self.path == "/lifecycle/stop":
+                lifecycle.set_status("stopping")
+                if request_stop is not None:
+                    request_stop()
+                self._json(200, {"ok": True})
+                return
+            if self.path.startswith("/command/") and not self._instance_matches():
+                return
             action = COMMAND_PATHS.get(self.path)
             audio_action = AUDIO_COMMAND_PATHS.get(self.path)
             if action is None and audio_action is None:
                 self._json(404, {"error": "not_found"})
+                return
+            if lifecycle.status == "stopping":
+                self._json(503, {"ok": False, "error": "stopping"})
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -116,9 +138,44 @@ def create_server(
 
         def do_PUT(self):
             self._method_not_allowed()
+        do_CONNECT = do_PUT
+        do_TRACE = do_PUT
 
         def _method_not_allowed(self):
+            if self._protected() and not self._authorized():
+                return
             self._json(405, {"error": "method_not_allowed"})
+
+        def _protected(self):
+            return self.path == "/state" or self.path.startswith(
+                ("/artwork/", "/command/", "/lifecycle/")
+            )
+
+        def _authorized(self):
+            values = self.headers.get_all("Authorization", [])
+            if not values:
+                self._json(401, {"error": "unauthorized"})
+                return False
+            if len(values) != 1:
+                self._json(403, {"error": "unauthorized"})
+                return False
+            value = values[0]
+            expected = f"Bearer {token}"
+            if len(value) > 64 or not value.isascii() or not hmac.compare_digest(
+                value.encode("ascii"), expected.encode("ascii")
+            ):
+                self._json(403, {"error": "unauthorized"})
+                return False
+            return True
+
+        def _instance_matches(self):
+            values = self.headers.get_all("X-Companion-Instance", [])
+            if len(values) != 1 or len(values[0]) > 64 or not values[0].isascii() or not hmac.compare_digest(
+                values[0].encode("ascii"), lifecycle.instance_id.encode("ascii")
+            ):
+                self._json(409, {"error": "companion_mismatch"})
+                return False
+            return True
 
         def _json(self, status, payload, headers=None, max_bytes=None):
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")

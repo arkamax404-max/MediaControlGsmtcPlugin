@@ -786,7 +786,7 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             bridge_main, "install_signal_handlers", side_effect=install
         ), patch.object(bridge_main, "restore_signal_handlers") as restore:
-            await bridge_main.run_bridge()
+            await bridge_main.run_bridge("A" * 43)
 
         adapter.start.assert_awaited_once_with()
         server_thread.start.assert_called_once_with()
@@ -796,6 +796,27 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
         audio.stop.assert_called_once_with()
         server_thread.join.assert_called_once_with(timeout=2)
         restore.assert_called_once_with({bridge_main.signal.SIGINT: "previous"})
+
+    async def test_acquisition_matrix_cleans_every_resource_once(self):
+        stages = ("adapter-construction", "adapter-start", "audio-construction", "audio-refresh",
+                  "server-bind", "thread-construction", "thread-start", "readiness", "task")
+        for position, failure in enumerate(stages):
+            reached = []
+            def fail(*_args, **_kwargs): reached.append(failure); raise RuntimeError()
+            adapter = SimpleNamespace(start=AsyncMock(side_effect=fail if position == 1 else None), stop=AsyncMock(), command=Mock())
+            audio = SimpleNamespace(refresh=Mock(side_effect=fail if position == 3 else None), stop=Mock(), command=Mock())
+            server = SimpleNamespace(serve_forever=Mock(), shutdown=Mock(), server_close=Mock())
+            thread = SimpleNamespace(start=Mock(side_effect=fail if position == 6 else None), join=Mock())
+            cache = Mock(); cache.get.side_effect = fail if position == 7 else None
+            def task(coroutine): coroutine.close(); return fail()
+            create_task = Mock(side_effect=task if position == 8 else None)
+            replacements = dict(MediaStateCache=Mock(return_value=cache), GSMTCAdapter=Mock(side_effect=fail if position == 0 else None, return_value=adapter), CoreAudioController=Mock(side_effect=fail if position == 2 else None, return_value=audio), create_server=Mock(side_effect=fail if position == 4 else None, return_value=server), install_signal_handlers=Mock(return_value={}), restore_signal_handlers=Mock())
+            with patch.multiple(bridge_main, **replacements), patch.object(bridge_main.threading, "Thread", side_effect=fail if position == 5 else None, return_value=thread), patch.object(bridge_main.asyncio, "to_thread", new=AsyncMock(side_effect=lambda fn: fn())), patch.object(bridge_main.asyncio, "create_task", create_task):
+                with self.assertRaises((RuntimeError, OSError)): await bridge_main.run_bridge("A" * 43)
+            self.assertEqual(reached, [failure]); self.assertEqual(create_task.call_count, position == 8)
+            if position == 8: cache.get.assert_called_once_with()
+            self.assertEqual((adapter.stop.await_count, audio.stop.call_count, server.server_close.call_count, server.shutdown.call_count, thread.join.call_count), (position > 0, position > 2, position > 4, position > 6, position > 6), failure)
+            replacements["restore_signal_handlers"].assert_called_once_with({})
 
 
 class ServerTests(unittest.TestCase):
@@ -814,6 +835,7 @@ class ServerTests(unittest.TestCase):
         self.loop_thread = threading.Thread(target=self.loop.run_forever)
         self.loop_thread.start()
         self.commands = []
+        self.lifecycle = bridge_main.CompanionLifecycle()
 
         async def commander(action):
             self.commands.append(action)
@@ -845,10 +867,19 @@ class ServerTests(unittest.TestCase):
             self.cache, commander, self.loop, port=0,
             audio_commander=audio_commander,
             artwork_lookup=self.artwork_processor.get_cached,
+            token="A" * 43,
+            lifecycle=self.lifecycle,
         )
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.start()
         self.base_url = f"http://{BRIDGE_HOST}:{self.server.server_port}"
+
+    def open(self, request):
+        if isinstance(request, str):
+            request = Request(request)
+        request.add_header("Authorization", "Bearer " + "A" * 43)
+        request.add_header("X-Companion-Instance", self.lifecycle.instance_id)
+        return urlopen(request, timeout=2)
 
     def tearDown(self):
         self.server.shutdown()
@@ -862,7 +893,7 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             create_server(self.cache, None, self.loop, host="0.0.0.0", port=0)
 
-        with urlopen(f"{self.base_url}/state", timeout=2) as response:
+        with self.open(f"{self.base_url}/state") as response:
             state_body = response.read()
             payload = json.loads(state_body)
         self.assertEqual(payload["title"], "Local Track")
@@ -874,7 +905,7 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
 
         request = Request(f"{self.base_url}/command/next", data=b"{}", method="POST")
-        with urlopen(request, timeout=2) as response:
+        with self.open(request) as response:
             self.assertEqual(json.load(response), {"ok": True})
         self.assertEqual(self.commands, ["next"])
 
@@ -887,11 +918,11 @@ class ServerTests(unittest.TestCase):
                 f"{self.base_url}/command/{path}", data=b"{}", method="POST"
             )
             if status == 200:
-                with urlopen(request, timeout=2) as response:
+                with self.open(request) as response:
                     payload = json.load(response)
             else:
                 with self.assertRaises(HTTPError) as error:
-                    urlopen(request, timeout=2)
+                    self.open(request)
                 self.assertEqual(error.exception.code, status)
                 payload = json.load(error.exception)
                 error.exception.close()
@@ -899,20 +930,20 @@ class ServerTests(unittest.TestCase):
 
         request = Request(f"{self.base_url}/state", method="PUT")
         with self.assertRaises(HTTPError) as error:
-            urlopen(request, timeout=2)
+            self.open(request)
         self.assertEqual(error.exception.code, 405)
         self.assertEqual(json.load(error.exception), {"error": "method_not_allowed"})
         error.exception.close()
 
         with self.assertRaises(HTTPError) as error:
-            urlopen(f"{self.base_url}/unknown", timeout=2)
+            self.open(f"{self.base_url}/unknown")
         self.assertEqual(error.exception.code, 404)
         error.exception.close()
 
     def test_artwork_bundle_is_strict_immutable_conditional_and_read_only(self):
         artwork_id = self.variants.artwork_id
         url = f"{self.base_url}/artwork/{artwork_id}"
-        with urlopen(url, timeout=2) as response:
+        with self.open(url) as response:
             body = response.read()
             payload = json.loads(body)
             self.assertEqual(response.headers["ETag"], f'"{artwork_id}"')
@@ -930,7 +961,7 @@ class ServerTests(unittest.TestCase):
 
         conditional = Request(url, headers={"If-None-Match": f'"{artwork_id}"'})
         with self.assertRaises(HTTPError) as error:
-            urlopen(conditional, timeout=2)
+            self.open(conditional)
         self.assertEqual(error.exception.code, 304)
         self.assertEqual(error.exception.read(), b"")
         self.assertEqual(error.exception.headers["ETag"], f'"{artwork_id}"')
@@ -938,13 +969,13 @@ class ServerTests(unittest.TestCase):
 
         for invalid in ("f" * 64, "A" * 64, "a" * 63, f"{artwork_id}?other=1"):
             with self.assertRaises(HTTPError) as error:
-                urlopen(f"{self.base_url}/artwork/{invalid}", timeout=2)
+                self.open(f"{self.base_url}/artwork/{invalid}")
             self.assertEqual(error.exception.code, 404)
             error.exception.close()
 
         write = Request(url, data=b"{}", method="POST")
         with self.assertRaises(HTTPError) as error:
-            urlopen(write, timeout=2)
+            self.open(write)
         self.assertEqual(error.exception.code, 404)
         error.exception.close()
 
@@ -956,11 +987,11 @@ class ServerTests(unittest.TestCase):
                 image_bytes(Image.new("RGBA", (2, 2), (index + 1, 0, 0, 255)))
             )
         with self.assertRaises(HTTPError) as error:
-            urlopen(f"{self.base_url}/artwork/{evicted_id}", timeout=2)
+            self.open(f"{self.base_url}/artwork/{evicted_id}")
         self.assertEqual(error.exception.code, 404)
         self.assertEqual(json.load(error.exception), {"error": "not_found"})
         error.exception.close()
-        with urlopen(f"{self.base_url}/artwork/{newest.artwork_id}", timeout=2) as response:
+        with self.open(f"{self.base_url}/artwork/{newest.artwork_id}") as response:
             self.assertEqual(json.load(response)["id"], newest.artwork_id)
 
 if __name__ == "__main__":
