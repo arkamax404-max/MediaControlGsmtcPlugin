@@ -26,6 +26,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Build and generated output
+.atl/
 build/
 dist/
 coverage/

@@ -1,0 +1,45 @@
+schema: spec-driven
+project: gsmtc-d200-controller
+strict_tdd: true
+
+context: |
+  Stack: Windows Python bridge plus an ESM Node.js Ulanzi Studio plugin.
+  Architecture: independent local companion using Windows GSMTC, Spotify Core Audio, loopback HTTP, and a vendored Ulanzi SDK.
+  Boundaries: no cloud service, remote bind, shell execution, device discovery, or Spotify Web API dependency.
+  Conventions: English technical artifacts, Windows PowerShell commands, unittest and Node built-in node:test, locked Node dependencies.
+  Delivery: local verification first; do not publish, release, push, or create remote artifacts without later explicit approval.
+
+testing:
+  strict_tdd: true
+  detected: 2026-08-23
+  commands:
+    python_unit: "python -m unittest discover -s tests -v"
+    node_unit: "Push-Location plugin\\com.ulanzi.spotifygsm.ulanziPlugin; npm test; Pop-Location"
+  notes:
+    - "Commands are capability records only; initialization did not execute runtime-affecting tests."
+    - "Tests use mocks and local ephemeral servers and must not start the bridge, Studio, D200, playback, or real audio."
+
+rules:
+  proposal:
+    - Include scope, rollback, local-only boundary, and explicit runtime-safety considerations for risky changes.
+  specs:
+    - Use Given/When/Then scenarios and RFC 2119 keywords.
+    - Preserve separate GSMTC media, timeline, and Spotify Core Audio responsibilities.
+  design:
+    - Document architecture decisions with rationale and sequence diagrams for complex flows.
+    - Preserve the independent companion direction; unified installer, autostart, diagnostics, and upgrades are future scope only.
+  tasks:
+    - Group tasks by phase with hierarchical numbering and keep each task completable in one session.
+    - Keep tests and documentation with the behavior they verify.
+  apply:
+    tdd: true
+    test_command: "python -m unittest discover -s tests -v"
+    guidelines:
+      - Follow existing Python unittest, Node node:test, ESM, Windows, and loopback-only patterns.
+      - Do not modify secrets, installed Ulanzi plugin files, bridge lifecycle, playback, audio, or remotes as part of planning or implementation without explicit scope.
+  verify:
+    test_command: "Run both commands in testing.commands after explicit approval; do not start runtime services."
+    build_command: "Not configured; no project build script detected."
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas and retain the audit trail.
