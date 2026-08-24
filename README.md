@@ -52,6 +52,17 @@ Windows. Pillow processes GSMTC artwork locally in memory.
    locally complete, but it is not deployable or packaged yet. Installer-managed
    token DACL hardening and physical Studio/device checks remain required.
 
+   Create a local privacy-filtered diagnostics bundle without starting the bridge:
+
+   ```powershell
+   python -m d200_bridge --diagnose
+   ```
+
+   The ZIP is written under `%LOCALAPPDATA%\GSMTCD200Controller\diagnostics` and
+   contains bounded version/runtime summaries, allowlisted dependency versions,
+   and sanitized companion log events. Review the ZIP before sharing it. No title,
+   artist, artwork, token, username, hostname, command line, or environment is included.
+
 4. Install the plugin's locked Node.js dependencies once:
 
    ```powershell

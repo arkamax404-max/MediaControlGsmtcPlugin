@@ -6,14 +6,21 @@ import threading
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from .gsmtc import GSMTCAdapter
-from .artwork import artwork_processor
-from .core_audio import CoreAudioController
-from .server import BRIDGE_HOST, BRIDGE_PORT, create_server
-from .state import MediaStateCache
-from .lifecycle import CompanionLifecycle, NamedMutex
-from .logging_config import configure_logging
-from .paths import CompanionPaths, ensure_token, load_token
+GSMTCAdapter = artwork_processor = CoreAudioController = create_server = MediaStateCache = None
+NamedMutex = configure_logging = ensure_token = load_token = None
+create_diagnostics = None
+
+
+def CompanionLifecycle(*args, **kwargs):
+    from .lifecycle import CompanionLifecycle as implementation
+    return implementation(*args, **kwargs)
+
+
+class CompanionPaths:
+    @classmethod
+    def from_environment(cls, *args, **kwargs):
+        from .paths import CompanionPaths as implementation
+        return implementation.from_environment(*args, **kwargs)
 
 
 def shutdown_signals():
@@ -50,6 +57,22 @@ def restore_signal_handlers(previous_handlers):
 
 
 async def run_bridge(token, lifecycle=None):
+    global GSMTCAdapter, artwork_processor, CoreAudioController, create_server, MediaStateCache
+    if GSMTCAdapter is None:
+        from .gsmtc import GSMTCAdapter as _value
+        GSMTCAdapter = _value
+    if artwork_processor is None:
+        from .artwork import artwork_processor as _value
+        artwork_processor = _value
+    if CoreAudioController is None:
+        from .core_audio import CoreAudioController as _value
+        CoreAudioController = _value
+    if create_server is None:
+        from .server import create_server as _value
+        create_server = _value
+    if MediaStateCache is None:
+        from .state import MediaStateCache as _value
+        MediaStateCache = _value
     loop = asyncio.get_running_loop()
     lifecycle = lifecycle or CompanionLifecycle()
     stop_event = asyncio.Event()
@@ -123,6 +146,11 @@ async def run_bridge(token, lifecycle=None):
 
 
 def stop_running_companion():
+    global load_token
+    from . import BRIDGE_HOST, BRIDGE_PORT
+    if load_token is None:
+        from .paths import load_token as _value
+        load_token = _value
     token = load_token()
     request = Request(
         f"http://{BRIDGE_HOST}:{BRIDGE_PORT}/lifecycle/stop", data=b"{}", method="POST",
@@ -139,8 +167,26 @@ def main(argv=None):
             return stop_running_companion()
         except (OSError, RuntimeError, URLError):
             return 1
+    if arguments == ["--diagnose"]:
+        global create_diagnostics
+        try:
+            if create_diagnostics is None:
+                from .diagnostics import create_diagnostics as _value
+                create_diagnostics = _value
+            destination = create_diagnostics()
+            print(f"Diagnostics created: {destination}")
+            return 0
+        except (OSError, RuntimeError, ValueError):
+            print("Diagnostics could not be created")
+            return 1
     if arguments:
         return 2
+    global NamedMutex, CompanionPaths, ensure_token, configure_logging
+    if NamedMutex is None:
+        from .lifecycle import NamedMutex as _mutex
+        from .paths import CompanionPaths as _paths, ensure_token as _token
+        from .logging_config import configure_logging as _logging
+        NamedMutex, CompanionPaths, ensure_token, configure_logging = _mutex, _paths, _token, _logging
     mutex = NamedMutex()
     try:
         if not mutex.acquire():
