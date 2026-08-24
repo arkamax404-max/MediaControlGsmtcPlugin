@@ -1,4 +1,9 @@
+import * as nodeFs from "node:fs";
+import nodePath from "node:path";
+
 export const BRIDGE_ORIGIN = "http://127.0.0.1:43821";
+export const API_MAJOR = 1;
+export const MIN_API_MINOR = 0;
 export const POLL_INTERVAL_MS = 1500;
 export const ANIMATION_INTERVAL_MS = 1000;
 export const STATE_MAX_AGE_MS = 15000;
@@ -38,6 +43,13 @@ const MAX_ARTWORK_BASE64_LENGTH = 4 * Math.ceil(MAX_ARTWORK_BYTES / 3);
 const MAX_ARTWORK_PIXELS = 4_194_304;
 const MAX_ARTWORK_DIMENSION = 4096;
 const PROGRESS_MODES = Object.freeze(["remaining", "elapsed", "total"]);
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const LOCAL_ROOT_PATTERN = /^[A-Z]:\\[^\x00-\x1f\\/:*?"<>|]+(?:\\[^\x00-\x1f\\/:*?"<>|]+)*$/;
+const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const WINDOWS_ALIAS_PATTERN = /^(?:con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const compatibilitySnapshot = (classification, token = null, instanceId = null) => (
+  Object.freeze({ classification, token, instanceId })
+);
 const CRC32_TABLE = Object.freeze(Array.from({ length: 256 }, (_, index) => {
   let value = index;
   for (let bit = 0; bit < 8; bit += 1) {
@@ -50,6 +62,28 @@ export function actionFromEvent(event) {
   const uuid = String(event?.uuid || event?.action || "");
   const name = uuid.split(".").at(-1);
   return Object.hasOwn(ACTIONS, name) ? name : null;
+}
+
+export function loadBridgeToken({ localAppData, fsImpl = nodeFs,
+  pathImpl = nodePath.win32 } = {}) {
+  try {
+    const segments = String(localAppData || "").slice(3).split("\\");
+    if (!LOCAL_ROOT_PATTERN.test(localAppData) || segments.some((part) => (
+      part === "." || part === ".." || /[. ]$/.test(part) || WINDOWS_ALIAS_PATTERN.test(part)
+    ))) return null;
+    const tokenPath = pathImpl.join(
+      localAppData, "GSMTCD200Controller", "config", "bridge-token",
+    );
+    const before = fsImpl.lstatSync(tokenPath);
+    if (!before.isFile() || before.isSymbolicLink() || before.size !== 43 || before.nlink !== 1) return null;
+    const after = fsImpl.statSync(tokenPath);
+    if (!after.isFile() || after.size !== 43 || after.nlink !== 1
+      || before.dev !== after.dev || before.ino !== after.ino) return null;
+    const token = fsImpl.readFileSync(tokenPath, { encoding: "utf8", flag: "r" });
+    return Buffer.byteLength(token, "utf8") === 43 && TOKEN_PATTERN.test(token) ? token : null;
+  } catch {
+    return null;
+  }
 }
 
 function finiteNumber(value, fallback = 0) {
@@ -295,17 +329,21 @@ function settingsMatch(raw, normalized) {
 
 export class SpotifyGSMTCPlugin {
   constructor({ sdk, fetchImpl = globalThis.fetch, setIntervalImpl = setInterval,
-    clearIntervalImpl = clearInterval, now = Date.now } = {}) {
+    clearIntervalImpl = clearInterval, now = Date.now,
+    localAppData = process.env.LOCALAPPDATA, fsImpl = nodeFs, pathImpl = nodePath.win32,
+    tokenLoader = loadBridgeToken } = {}) {
     this.sdk = sdk;
     this.fetchImpl = fetchImpl;
     this.setIntervalImpl = setIntervalImpl;
     this.clearIntervalImpl = clearIntervalImpl;
     this.now = now;
+    this.tokenLoader = tokenLoader;
+    this.tokenOptions = { localAppData, fsImpl, pathImpl };
     this.contexts = new Map();
     this.rendered = new Map();
     this.progressRenderedAt = new Map();
     this.lastState = { online: false, available: false, audioAvailable: false,
-      timelineAvailable: false, revision: 0 };
+      timelineAvailable: false, revision: 0, reason: "unavailable" };
     this.artworkBundle = null;
     this.pollTimer = null;
     this.animationTimer = null;
@@ -394,9 +432,14 @@ export class SpotifyGSMTCPlugin {
     const command = ACTIONS[action]?.command;
     if (!command) return false;
     try {
+      const snapshot = await this.checkCompatibility();
+      if (snapshot.classification !== "compatible") {
+        this.setOffline(snapshot.classification);
+        return false;
+      }
       const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/command/${command}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.requestHeaders(snapshot, { "Content-Type": "application/json" }),
         body: "{}",
         signal: AbortSignal.timeout(1000),
       });
@@ -428,8 +471,14 @@ export class SpotifyGSMTCPlugin {
     if (this.polling || this.contexts.size === 0) return;
     this.polling = true;
     try {
+      const snapshot = await this.checkCompatibility();
+      if (snapshot.classification !== "compatible") {
+        this.setOffline(snapshot.classification);
+        return;
+      }
       const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/state`, {
         method: "GET",
+        headers: this.requestHeaders(snapshot),
         signal: AbortSignal.timeout(1000),
       });
       if (!response.ok) throw new Error("Bridge unavailable");
@@ -441,7 +490,7 @@ export class SpotifyGSMTCPlugin {
         this.renderAll();
       }
       if (nextState.artworkId && this.artworkBundle?.id !== nextState.artworkId) {
-        await this.fetchArtwork(nextState.artworkId);
+        await this.fetchArtwork(nextState.artworkId, snapshot);
       }
       this.renderAll();
     } catch {
@@ -452,10 +501,11 @@ export class SpotifyGSMTCPlugin {
     }
   }
 
-  async fetchArtwork(artworkId) {
+  async fetchArtwork(artworkId, snapshot) {
     try {
       const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/artwork/${artworkId}`, {
         method: "GET",
+        headers: this.requestHeaders(snapshot),
         signal: AbortSignal.timeout(1000),
       });
       if (!response.ok) return false;
@@ -475,10 +525,56 @@ export class SpotifyGSMTCPlugin {
     }
   }
 
-  setOffline() {
+  requestHeaders(snapshot, extra = {}) {
+    const headers = { ...extra, Authorization: `Bearer ${snapshot.token}` };
+    if (snapshot.instanceId) headers["X-Companion-Instance"] = snapshot.instanceId;
+    return headers;
+  }
+
+  async checkCompatibility() {
+    let token;
+    try {
+      token = this.tokenLoader(this.tokenOptions);
+    } catch {
+      token = null;
+    }
+    if (!TOKEN_PATTERN.test(String(token || ""))) return compatibilitySnapshot("configuration");
+    try {
+      const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/health`, {
+        method: "GET", headers: this.requestHeaders({ token }), signal: AbortSignal.timeout(1000),
+      });
+      if (!response.ok) return compatibilitySnapshot("unavailable", token);
+      const health = await response.json();
+      if (health?.service !== "d200-gsmtc-bridge"
+        || ![health.api_major, health.api_minor].every((value) => (
+          Number.isSafeInteger(value) && value >= 0 && value <= 65535
+        )) || !INSTANCE_ID_PATTERN.test(String(health.instance_id || ""))) {
+        return compatibilitySnapshot("unavailable", token);
+      }
+      const instanceId = health.instance_id;
+      if (health.api_major !== API_MAJOR || health.api_minor < MIN_API_MINOR) {
+        return compatibilitySnapshot("incompatible", token, instanceId);
+      }
+      const classification = health.status === "ready" || health.status === "degraded"
+        ? "compatible" : "unavailable";
+      return compatibilitySnapshot(classification, token, instanceId);
+    } catch {
+      return compatibilitySnapshot("unavailable", token);
+    }
+  }
+
+  offlineLabel(state) {
+    if (state?.reason === "configuration") return "Companion setup required";
+    if (state?.reason === "incompatible") return "Incompatible companion";
+    return "Offline";
+  }
+
+  setOffline(reason = "unavailable") {
+    const changed = this.lastState.online !== false || this.lastState.reason !== reason;
     this.artworkBundle = null;
     this.lastState = { online: false, available: false, audioAvailable: false,
-      timelineAvailable: false, revision: this.lastState.revision };
+      timelineAvailable: false, revision: this.lastState.revision, reason };
+    if (changed) this.rendered.clear();
     this.renderAll();
     this.manageAnimation();
   }
@@ -519,7 +615,7 @@ export class SpotifyGSMTCPlugin {
 
   renderProgress(context, state, settings, mode, force = false) {
     const now = this.now();
-    let text = "Offline";
+    let text = this.offlineLabel(state);
     let progress = 0;
     let advancing = false;
     if (state.online && state.available && state.timelineAvailable) {
@@ -555,7 +651,9 @@ export class SpotifyGSMTCPlugin {
       if (this.rendered.get(context) === signature) return;
       this.rendered.set(context, signature);
       if (tile) this.sdk.setBaseDataIcon(context, tile, "");
-      else if (state.online === false) this.sdk.setPathIcon(context, "./assets/offline.svg", "Offline");
+      else if (state.online === false) this.sdk.setPathIcon(
+        context, "./assets/offline.svg", this.offlineLabel(state),
+      );
       else this.sdk.setPathIcon(context, mosaic.icon, mosaic.title);
       return;
     }
@@ -567,7 +665,7 @@ export class SpotifyGSMTCPlugin {
 
     if (state.online === false || (state.online === undefined
       && !state.available && !state.audioAvailable)) {
-      this.sdk.setPathIcon(context, "./assets/offline.svg", "Offline");
+      this.sdk.setPathIcon(context, "./assets/offline.svg", this.offlineLabel(state));
       return;
     }
     if (ACTIONS[action]?.command?.startsWith("volume") || action === "mute-toggle") {

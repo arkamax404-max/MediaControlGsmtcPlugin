@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { win32 as pathWin32 } from "node:path";
 import test from "node:test";
 
 import {
@@ -14,6 +15,7 @@ import {
   extrapolatePosition,
   formatProgressTime,
   formatRemaining,
+  loadBridgeToken,
   nextProgressMode,
   normalizeArtworkBundle,
   normalizeBridgeState,
@@ -40,6 +42,9 @@ const MOSAIC_ACTIONS = Object.freeze([
 ]);
 const ARTWORK_ID_A = "a".repeat(64);
 const ARTWORK_ID_B = "b".repeat(64);
+const TOKEN = "A".repeat(43);
+const TOKEN_B = "B".repeat(43);
+const INSTANCE_ID = "123e4567-e89b-42d3-a456-426614174000";
 
 function artworkBundle(id = ARTWORK_ID_A, overrides = {}) {
   return {
@@ -97,6 +102,151 @@ function state(overrides = {}) {
     ...overrides,
   };
 }
+
+function health(overrides = {}) {
+  return { service: "d200-gsmtc-bridge", api_major: 1, api_minor: 0,
+    status: "ready", instance_id: INSTANCE_ID, ...overrides };
+}
+
+function createPlugin(options = {}) {
+  const { fetchImpl = async () => response(state()), healthImpl = async () => response(health()),
+    tokenLoader = () => TOKEN, ...rest } = options;
+  return new SpotifyGSMTCPlugin({ ...rest, tokenLoader,
+    fetchImpl: (url, init) => url.endsWith("/health") ? healthImpl(url, init) : fetchImpl(url, init) });
+}
+
+test("loads only a canonical injected token path and strict regular file", () => {
+  const calls = [];
+  const metadata = { size: 43, nlink: 1, dev: 2, ino: 3,
+    isFile: () => true, isSymbolicLink: () => false };
+  const fsImpl = {
+    lstatSync(path) { calls.push(["lstat", path]); return metadata; },
+    statSync(path) { calls.push(["stat", path]); return metadata; },
+    readFileSync(path, options) { calls.push(["read", path, options]); return TOKEN; },
+  };
+  assert.equal(loadBridgeToken({ localAppData: "C:\\Users\\José Name\\Local Data",
+    fsImpl, pathImpl: pathWin32 }), TOKEN);
+  assert.equal(calls[0][1], "C:\\Users\\José Name\\Local Data\\GSMTCD200Controller\\config\\bridge-token");
+  for (const root of ["relative", "C:/x/./y", "C:/x//y", "C:/x\\y", "C:\\x\\..\\y", "C:\\x\\\\y",
+    "C:\\x\\", "C:\\x.\\y", "C:\\x \\y", "C:\\CON\\y", "C:\\com1.txt\\y",
+    "\\\\server\\share", "\\\\?\\C:\\device"])
+    assert.equal(loadBridgeToken({ localAppData: root, fsImpl, pathImpl: pathWin32 }), null);
+  for (const changes of [{ size: 42 }, { nlink: 2 }, { isFile: () => false },
+    { isSymbolicLink: () => true }, { dev: 9 }, { ino: 9 }]) {
+    const changed = { ...metadata, ...changes };
+    assert.equal(loadBridgeToken({ localAppData: "C:\\Valid\\Root",
+      fsImpl: { ...fsImpl, lstatSync: () => changed }, pathImpl: pathWin32 }), null);
+  }
+  for (const value of ["", "A".repeat(42), "+".repeat(43), "é".repeat(43)])
+    assert.equal(loadBridgeToken({ localAppData: "C:\\Valid\\Root",
+      fsImpl: { ...fsImpl, readFileSync: () => value }, pathImpl: pathWin32 }), null);
+  assert.equal(loadBridgeToken({ localAppData: "C:\\Valid\\Root",
+    fsImpl: { ...fsImpl, lstatSync: () => { throw new Error("missing"); } }, pathImpl: pathWin32 }), null);
+});
+
+test("missing or invalid token renders setup required and sends zero requests", async () => {
+  for (const loaded of [null, "invalid"]) {
+    const sdk = createSdk(); let requests = 0;
+    const plugin = new SpotifyGSMTCPlugin({ sdk, tokenLoader: () => loaded,
+      fetchImpl: async () => { requests += 1; throw new Error("must not fetch"); } });
+    plugin.contexts.set("next", "next"); await plugin.poll();
+    assert.equal(await plugin.run({ context: "next" }), false); assert.equal(requests, 0);
+    assert.deepEqual(sdk.calls.at(-1), ["path", "next", "./assets/offline.svg", "Companion setup required"]);
+    assert.ok(!JSON.stringify(sdk.calls).includes(TOKEN));
+  }
+});
+
+test("reloads created, rotated, and invalid replacement tokens without stale fallback", async () => {
+  const loaded = [null, TOKEN, TOKEN_B, "invalid"]; const requests = [];
+  const plugin = new SpotifyGSMTCPlugin({ sdk: createSdk(), tokenLoader: () => loaded.shift(),
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"), fetchImpl: async (url, init) => {
+      requests.push([url, init.headers.Authorization]);
+      return url.endsWith("/health") ? response(health()) : response(state());
+    } });
+  plugin.contexts.set("next", "next");
+  await plugin.poll(); assert.equal(requests.length, 0);
+  await plugin.poll(); await plugin.poll();
+  assert.deepEqual(requests.map(([, auth]) => auth),
+    [`Bearer ${TOKEN}`, `Bearer ${TOKEN}`, `Bearer ${TOKEN_B}`, `Bearer ${TOKEN_B}`]);
+  plugin.artworkBundle = artworkBundle(); await plugin.poll();
+  assert.equal(requests.length, 4); assert.equal(plugin.artworkBundle, null);
+  assert.equal(plugin.lastState.reason, "configuration");
+});
+
+test("uses one token and instance snapshot from health through dependent request", async () => {
+  let loaded = TOKEN; const requests = [];
+  const plugin = new SpotifyGSMTCPlugin({ sdk: createSdk(), tokenLoader: () => loaded,
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"), fetchImpl: async (url, init) => {
+      requests.push([url, init.headers]);
+      if (url.endsWith("/health")) { loaded = TOKEN_B; return response(health()); }
+      return response(state());
+    } });
+  plugin.contexts.set("next", "next"); await plugin.poll();
+  assert.equal(requests[1][1].Authorization, `Bearer ${TOKEN}`);
+  assert.equal(requests[1][1]["X-Companion-Instance"], INSTANCE_ID);
+  await plugin.poll(); assert.equal(requests[2][1].Authorization, `Bearer ${TOKEN_B}`);
+});
+
+test("authenticates health state artwork and commands in strict order", async () => {
+  const requests = []; const sdk = createSdk();
+  const plugin = new SpotifyGSMTCPlugin({ sdk, tokenLoader: () => TOKEN,
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"), fetchImpl: async (url, init) => {
+      requests.push([url, init]);
+      if (url.endsWith("/health")) return response(health());
+      if (url.endsWith("/state")) return response(state({ artwork_id: ARTWORK_ID_A }));
+      if (url.includes("/artwork/")) return response(artworkBundle());
+      return response({ ok: true });
+    } });
+  plugin.contexts.set("cover", "nowplaying"); await plugin.poll();
+  assert.deepEqual(requests.map(([url]) => url), [`${BRIDGE_ORIGIN}/health`, `${BRIDGE_ORIGIN}/state`,
+    `${BRIDGE_ORIGIN}/artwork/${ARTWORK_ID_A}`]);
+  plugin.contexts.set("next", "next"); await plugin.run({ context: "next" });
+  assert.deepEqual(requests.slice(3, 5).map(([url]) => url),
+    [`${BRIDGE_ORIGIN}/health`, `${BRIDGE_ORIGIN}/command/next`]);
+  assert.ok(requests.every(([, init]) => init.headers.Authorization === `Bearer ${TOKEN}`));
+  assert.equal(requests[4][1].headers["Content-Type"], "application/json");
+  assert.equal(requests[4][1].headers["X-Companion-Instance"], INSTANCE_ID);
+  assert.ok(!JSON.stringify(sdk.calls).includes(TOKEN));
+});
+
+test("reevaluates compatibility, clears stale artwork, and recovers", async () => {
+  const sdk = createSdk(); const versions = [health(), health({ api_major: 2 }), health()];
+  let healthIndex = 0; let stateCalls = 0;
+  const plugin = new SpotifyGSMTCPlugin({ sdk, tokenLoader: () => TOKEN,
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"), fetchImpl: async (url) => {
+      if (url.endsWith("/health")) return response(versions[healthIndex++]);
+      if (url.endsWith("/state")) { stateCalls += 1; return response(state({ artwork_id: ARTWORK_ID_A })); }
+      return response(artworkBundle());
+    } });
+  plugin.contexts.set("cover", "nowplaying"); await plugin.poll();
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  await plugin.poll();
+  assert.equal(plugin.lastState.reason, "incompatible"); assert.equal(plugin.artworkBundle, null);
+  assert.deepEqual(sdk.calls.at(-1), ["path", "cover", "./assets/offline.svg", "Incompatible companion"]);
+  await plugin.poll();
+  assert.equal(plugin.lastState.online, true); assert.equal(stateCalls, 2);
+});
+
+test("fresh command health suppresses every unavailable or incompatible case", async () => {
+  const cases = [[health({ api_major: 2 }), "incompatible"], [health({ api_minor: -1 }), "unavailable"],
+    [health({ service: "wrong" }), "unavailable"], [health({ api_major: 1.5 }), "unavailable"], [health({ api_minor: "0" }), "unavailable"],
+    [health({ api_major: Number.MAX_SAFE_INTEGER }), "unavailable"], [health({ api_minor: 65536 }), "unavailable"],
+    [health({ instance_id: "bad" }), "unavailable"], [health({ status: "starting" }), "unavailable"],
+    [health({ status: "stopping" }), "unavailable"], [health({ status: "unknown" }), "unavailable"]];
+  for (const [payload, reason] of cases) {
+    const requests = []; const plugin = new SpotifyGSMTCPlugin({ sdk: createSdk(), tokenLoader: () => TOKEN,
+      fetchImpl: async (url) => { requests.push(url); return response(payload); } });
+    plugin.contexts.set("next", "next"); assert.equal(await plugin.run({ context: "next" }), false);
+    assert.deepEqual(requests, [`${BRIDGE_ORIGIN}/health`]); assert.equal(plugin.lastState.reason, reason);
+  }
+  for (const failure of ["non-ok", "network"]) {
+    const requests = []; const plugin = new SpotifyGSMTCPlugin({ sdk: createSdk(), tokenLoader: () => TOKEN,
+      fetchImpl: async (url) => { requests.push(url); if (failure === "network") throw new Error();
+        return response({}, false); } });
+    plugin.contexts.set("next", "next"); assert.equal(await plugin.run({ context: "next" }), false);
+    assert.deepEqual(requests, [`${BRIDGE_ORIGIN}/health`]); assert.equal(plugin.lastState.reason, "unavailable");
+  }
+});
 
 test("maps all twelve declared action UUIDs without changing existing UUIDs", () => {
   assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.nowplaying" }), "nowplaying");
@@ -260,7 +410,7 @@ test("uses a deterministic em-box baseline for production and unusable glyph bou
 test("cycles progress contexts independently with immediate local-only renders", async () => {
   const sdk = createSdk();
   let requests = 0;
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async () => { requests += 1; throw new Error("unexpected request"); },
     now: () => 5000,
@@ -306,7 +456,7 @@ test("keeps total text stable while one-second animation advances the ring", () 
   let clock = 5000;
   let nextId = 0;
   const timers = new Map();
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     now: () => clock,
     setIntervalImpl(fn, ms) { const id = ++nextId; timers.set(id, { fn, ms }); return id; },
@@ -346,7 +496,7 @@ test("keeps total text stable while one-second animation advances the ring", () 
 
 test("cycles mode without replacing offline or missing-timeline labels", async () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async () => { throw new Error("unexpected request"); },
   });
@@ -370,7 +520,7 @@ test("cycles mode without replacing offline or missing-timeline labels", async (
 test("initializes and recreates progress contexts in remaining mode", async () => {
   const sdk = createSdk();
   let nextId = 0;
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async () => ({ ok: true, async json() { return state({ is_playing: false }); } }),
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
@@ -407,7 +557,7 @@ test("uses one global animation timer, limits updates, deduplicates, and ends on
   let nextId = 0;
   const timers = new Map();
   const cleared = [];
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     now: () => clock,
     setIntervalImpl(fn, ms) { const id = ++nextId; timers.set(id, { fn, ms }); return id; },
@@ -442,7 +592,7 @@ test("uses one global animation timer, limits updates, deduplicates, and ends on
 
 test("renders offline, missing timeline, pause, and end states clearly", () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk, now: () => 5000 });
+  const plugin = createPlugin({ sdk, now: () => 5000 });
   const settings = normalizeProgressSettings();
   plugin.contexts.set("progress", { action: "progress", active: true, settings });
   const renderText = (stateValue) => {
@@ -465,7 +615,7 @@ test("setactive, clear, close, and stop clean contexts and global timers", () =>
   const sdk = createSdk();
   let nextId = 0;
   const timers = new Set();
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     now: () => 1000,
     setIntervalImpl() { const id = ++nextId; timers.add(id); return id; },
@@ -497,7 +647,7 @@ test("setactive, clear, close, and stop clean contexts and global timers", () =>
 test("normalizes and persists progress settings once with immediate render", async () => {
   const sdk = createSdk();
   let nextId = 0;
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async () => ({ ok: true, async json() { return state(); } }),
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
@@ -541,7 +691,7 @@ test("inspector normalization and serialization match plugin settings", () => {
 
 test("sends direct color and grayscale PNGs and restores the identical color URI", () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  const plugin = createPlugin({ sdk });
   plugin.contexts.set("cover", "nowplaying");
   plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   const thumbnail = PNG_ARTWORK;
@@ -608,7 +758,7 @@ test("rejects malformed or disguised artwork into the existing fallback", () => 
     ).toString("base64")}`,
   ];
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  const plugin = createPlugin({ sdk });
   for (const [revision, thumbnail] of invalidArtwork.entries()) {
     assert.equal(artworkDataUri(thumbnail), null);
     plugin.render(`cover-${revision}`, "nowplaying", {
@@ -640,7 +790,7 @@ test("normalizes strict artwork IDs and atomic six-PNG bundles", () => {
 
 test("renders each direct color PNG tile in exact TL TR BL BR order", () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  const plugin = createPlugin({ sdk });
   plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   const current = {
     online: true, available: true, revision: 1, isPlaying: true, artworkId: ARTWORK_ID_A,
@@ -661,7 +811,7 @@ test("rejects a missing or one-invalid bundle atomically into local fallbacks", 
     tiles: [...MOSAIC_TILES.slice(0, 3), "data:image/png;base64,iVBORw0KGgo="],
   }), ARTWORK_ID_A)]) {
     const sdk = createSdk();
-    const plugin = new SpotifyGSMTCPlugin({ sdk });
+    const plugin = createPlugin({ sdk });
     plugin.artworkBundle = bundle;
     const current = { online: true, available: true, artworkId: ARTWORK_ID_A };
     MOSAIC_ACTIONS.forEach((action, index) => plugin.render(`tile-${index}`, action, current));
@@ -677,7 +827,7 @@ test("rejects a missing or one-invalid bundle atomically into local fallbacks", 
 test("mosaic presses are inert and pause does not alter or rerender color tiles", async () => {
   const sdk = createSdk();
   let requests = 0;
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async () => { requests += 1; throw new Error("unexpected request"); },
   });
@@ -705,7 +855,7 @@ test("mosaic presses are inert and pause does not alter or rerender color tiles"
 test("uses one quiet offline fallback and recovers", async () => {
   const sdk = createSdk();
   let fail = true;
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async (url) => {
       if (fail) throw new Error("offline");
@@ -727,7 +877,7 @@ test("uses one quiet offline fallback and recovers", async () => {
 test("fetches one shared bundle per artwork ID and skips it on unchanged polls", async () => {
   const sdk = createSdk();
   const requests = [];
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async (url) => {
       requests.push(url);
@@ -753,7 +903,7 @@ test("fetches one shared bundle per artwork ID and skips it on unchanged polls",
 test("bundle failure falls back atomically and retries on the next poll", async () => {
   const sdk = createSdk();
   let bundleAttempts = 0;
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async (url) => {
       if (url.endsWith("/state")) return response(state({ artwork_id: ARTWORK_ID_A }));
@@ -777,7 +927,7 @@ test("ID changes clear old artwork before fetch and stale responses cannot insta
   const sdk = createSdk();
   let releaseBundle;
   const pendingBundle = new Promise((resolve) => { releaseBundle = resolve; });
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async (url) => {
       if (url.endsWith("/state")) return response(state({ artwork_id: ARTWORK_ID_B }));
@@ -815,7 +965,7 @@ test("ID changes clear old artwork before fetch and stale responses cannot insta
 test("routes nowplaying and toggle through shared toggle flow and rerenders polled state", async () => {
   const sdk = createSdk();
   const requests = [];
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async (url, options) => {
       requests.push([url, options.method]);
@@ -853,7 +1003,7 @@ test("failed toggle commands preserve last state and rendered output", async () 
     ["toggle", "non-ok"], ["toggle", "exception"],
   ]) {
     const sdk = createSdk();
-    const plugin = new SpotifyGSMTCPlugin({
+    const plugin = createPlugin({
       sdk,
       fetchImpl: async () => {
         if (failure === "exception") throw new Error("command unavailable");
@@ -879,7 +1029,7 @@ test("failed toggle commands preserve last state and rendered output", async () 
 
 test("preserves unrelated transport command behavior", async () => {
   const requests = [];
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk: createSdk(),
     fetchImpl: async (url, options) => {
       requests.push([url, options.method]);
@@ -900,7 +1050,7 @@ test("preserves unrelated transport command behavior", async () => {
 
 test("targets every audio command at its fixed loopback endpoint", async () => {
   const requests = [];
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk: createSdk(),
     fetchImpl: async (url, options) => {
       requests.push([url, options.method]);
@@ -922,7 +1072,7 @@ test("targets every audio command at its fixed loopback endpoint", async () => {
 
 test("renders volume, mute, mixed, no-audio, and offline states", () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  const plugin = createPlugin({ sdk });
   const audio = { online: true, available: false, audioAvailable: true,
     revision: 1, volumePercent: 65, isMuted: false, audioMixed: false };
   plugin.render("volume", "volume-up", audio);
@@ -941,7 +1091,7 @@ test("renders volume, mute, mixed, no-audio, and offline states", () => {
 
 test("stale bridge state is rendered as unavailable", async () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({
+  const plugin = createPlugin({
     sdk,
     fetchImpl: async () => ({ ok: true, async json() { return state({ updated_at: "2026-08-23T11:00:00.000Z" }); } }),
     now: () => Date.parse("2026-08-23T12:00:00.000Z"),
@@ -953,7 +1103,7 @@ test("stale bridge state is rendered as unavailable", async () => {
 
 test("prefixes every local icon path passed to the SDK", () => {
   const sdk = createSdk();
-  const plugin = new SpotifyGSMTCPlugin({ sdk });
+  const plugin = createPlugin({ sdk });
   const available = {
     available: true, revision: 1, isPlaying: false,
     title: "Track", artist: "Artist", thumbnail: null,

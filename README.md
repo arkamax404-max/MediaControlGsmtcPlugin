@@ -44,6 +44,14 @@ Windows. Pillow processes GSMTC artwork locally in memory.
    It listens only on `http://127.0.0.1:43821`. Verify it with
    `Invoke-RestMethod http://127.0.0.1:43821/health`.
 
+   The companion is single-instance. Stop a contributor foreground instance
+   through its normal cleanup path with `python -m d200_bridge --stop`; signals
+   and this command share the same asynchronous stop event.
+
+   **Slice 1A + Slice 1B status:** the authenticated backend/plugin source contract is
+   locally complete, but it is not deployable or packaged yet. Installer-managed
+   token DACL hardening and physical Studio/device checks remain required.
+
 4. Install the plugin's locked Node.js dependencies once:
 
    ```powershell
@@ -190,9 +198,32 @@ not reread media properties or thumbnails. Media, timeline, and audio are cached
 `timeline_available`, `position_seconds`, `duration_seconds`, `playback_rate`, and
 `position_updated_at` describe the normalized timeline anchor.
 Its API is limited to `GET /health`, `GET /state`, `GET /artwork/{artwork_id}`, and
-`POST /command/{previous,toggle,next,volume-up,volume-down,mute-toggle}`. It has no CORS support, remote bind, shell
+`POST /command/{previous,toggle,next,volume-up,volume-down,mute-toggle}`, plus
+`POST /lifecycle/stop`. Health exposes bounded companion/API identity and lifecycle
+state. Every other route requires the per-user Bearer token. The plugin loads that
+token locally, authenticates every bridge request, and rechecks API compatibility
+before every poll and command. Each check reloads the token, and commands pin the
+validated companion instance. It has no CORS support, remote bind, shell
 execution, cloud component, or device-discovery loop. The plugin connects to Studio
 through its launch-provided local WebSocket arguments and polls only the bridge.
+
+Mutable data is independent of the working directory under
+`%LOCALAPPDATA%\GSMTCD200Controller`: `config\bridge-token`, rotating UTF-8 logs in
+`logs`, and reserved `cache` and `diagnostics` roots. The token persists across
+launches and is never returned or logged. Python creates the file atomically with
+the restrictive semantics available to the standard library; a proven user-only
+Windows DACL remains installer work. No PyInstaller bundle, installer, scheduled
+task, or installable companion package exists in this slice.
+
+Token authentication blocks browser-origin and accidental loopback callers; it
+does not defend against a malicious process running as the same Windows user.
+Path metadata checks are best-effort misconfiguration defense, not race-free
+containment. Installer-managed user-only DACL hardening remains required.
+
+A machine-wide named mutex coordinates ownership of the fixed loopback port across
+Windows sessions. If that namespace is inaccessible, startup fails closed; it never
+kills or replaces another process. The fixed port therefore permits only one
+companion instance per machine.
 
 **Local-only guarantee:** the bridge and plugin use Windows GSMTC, Core Audio,
 and loopback traffic only. They do not communicate with cloud services.
