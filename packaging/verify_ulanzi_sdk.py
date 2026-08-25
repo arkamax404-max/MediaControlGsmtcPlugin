@@ -25,7 +25,10 @@ def inspect_sdk():
     sys.path.insert(0, str(runtime))
     from artwork_bundle import ArtworkBundle, ArtworkBundleCache
     from bridge_client import BridgeArtworkResult, BridgeResult, BridgeStateResult
-    from now_playing_action import ACTION_UUID as NOW_PLAYING_UUID, NowPlayingActionModel
+    from now_playing_action import (ACTION_UUID as NOW_PLAYING_UUID, AUDIO_ACTIONS,
+                                    MOSAIC_ACTIONS, MUTE_TOGGLE_UUID, PREVIOUS_UUID,
+                                    TOGGLE_UUID, TRANSPORT_DISPLAY,
+                                    NowPlayingActionModel, mute_toggle_data_uri)
     from progress_action import ACTION_UUID, ProgressActionModel
     from progress_scheduler import ProgressScheduler, register_progress_handlers
     from transport_actions import TransportRouter, register_transport_handlers
@@ -64,15 +67,17 @@ def inspect_sdk():
 
         def execute(self, command, cancelled=None):
             self.commands.append(command)
-            if len(self.commands) == 5:
+            if len(self.commands) == 7:
                 self.completed.set()
             return BridgeResult(command, "ok")
 
         def get_state(self, cancelled=None):
             now = datetime.now(timezone.utc).isoformat()
             return BridgeStateResult("ok", {
-                "available": True, "is_playing": True, "title": "Track",
+                "available": True, "is_playing": len(self.commands) < 7, "title": "Track",
                 "artist": "Artist", "artwork_id": "a" * 64,
+                "audio_available": True, "volume_percent": 55,
+                "is_muted": len(self.commands) >= 6, "audio_mixed": False,
                 "timeline_available": False, "position_seconds": 0,
                 "duration_seconds": 0, "playback_rate": 1,
                 "position_updated_at": "", "updated_at": now,
@@ -112,8 +117,30 @@ def inspect_sdk():
     api.emit("add", {"uuid": ACTION_UUID, "context": context, "param": {}})
     now_context = "now-uuid___now-key___now-action"
     api.emit("add", {"uuid": NOW_PLAYING_UUID, "context": now_context})
+    mosaic_contexts = []
+    for index, action in enumerate(MOSAIC_ACTIONS):
+        mosaic_context = f"tile-{index}___tile-key-{index}___tile-action-{index}"
+        mosaic_contexts.append(mosaic_context)
+        api.emit("add", {"uuid": action, "context": mosaic_context})
+    audio_contexts = []
+    for index, action in enumerate(AUDIO_ACTIONS):
+        audio_context = f"audio-{index}___audio-key-{index}___audio-action-{index}"
+        audio_contexts.append(audio_context)
+        api.emit("add", {"uuid": action, "context": audio_context})
+    transport_contexts = []
+    for index, action in enumerate(TRANSPORT_DISPLAY):
+        transport_context = f"transport-{index}___transport-key-{index}___transport-action-{index}"
+        transport_contexts.append(transport_context)
+        api.emit("add", {"uuid": action, "context": transport_context})
+    transport_uuids = {value.split("___")[0] for value in transport_contexts}
+    deadline = time.monotonic() + 2
+    while len([item for _, message in socket.messages
+               for item in message.get("param", {}).get("statelist", [])
+               if item.get("uuid") in transport_uuids]) < 3 \
+            and time.monotonic() < deadline:
+        time.sleep(0.005)
     deadline = time.monotonic() + 1
-    while len(socket.messages) < 4 and time.monotonic() < deadline:
+    while len(socket.messages) < 15 and time.monotonic() < deadline:
         time.sleep(0.005)
     if not socket.messages:
         raise RuntimeError("Integrated progress scheduler did not emit a display")
@@ -140,6 +167,23 @@ def inspect_sdk():
             or now_items[1].get("data") != "data:image/png;base64,color"
             or now_items[1].get("textData") != "Track\nArtist"):
         raise RuntimeError(f"Unexpected integrated Now Playing payloads: {now_items}")
+    mosaic_payloads = []
+    for index, context_value in enumerate(mosaic_contexts):
+        uuid, key, actionid = context_value.split("___")
+        items = [item for _, message in display_messages
+                 for item in message.get("param", {}).get("statelist", [])
+                 if item.get("uuid") == uuid]
+        mosaic_payloads.append(items)
+        _, fallback, title = tuple(MOSAIC_ACTIONS.values())[index]
+        if ([item.get("type") for item in items] != [2, 1]
+                or items[0].get("path") != fallback
+                or items[0].get("textData") != title
+                or items[1].get("data") != ("tl", "tr", "bl", "br")[index]
+                or items[1].get("textData") != ""
+                or [item.get("showtext") for item in items] != [True, False]
+                or any(item.get("key") != key or item.get("actionid") != actionid
+                       for item in items)):
+            raise RuntimeError(f"Unexpected integrated mosaic payloads: {items}")
     expected_settings = {"progressColor": "#1DB954", "trackColor": "#333333",
                          "textColor": "#FFFFFF", "backgroundColor": "#000000",
                          "strokeWidth": 14}
@@ -158,12 +202,65 @@ def inspect_sdk():
     for _ in range(3):
         api.emit("run", {"uuid": "com.arkamax404.ulanzi.mediacontrol.volume-up"})
     api.emit("run", {"uuid": NOW_PLAYING_UUID, "context": now_context})
+    api.emit("run", {"uuid": MUTE_TOGGLE_UUID, "context": audio_contexts[2]})
+    api.emit("run", {"uuid": TOGGLE_UUID, "context": transport_contexts[0]})
     callback_seconds = time.monotonic() - started_at
     if callback_seconds >= 0.25 or not probe_client.completed.wait(1):
         raise RuntimeError(f"Real SDK run callback blocked: {callback_seconds:.6f}s")
-    expected_commands = ["previous", "volume-up", "volume-up", "volume-up", "toggle"]
+    expected_commands = ["previous", "volume-up", "volume-up", "volume-up", "toggle",
+                         "mute-toggle", "toggle"]
     if probe_client.commands != expected_commands:
         raise RuntimeError(f"Unexpected real SDK routing: {probe_client.commands}")
+    def state_items():
+        return [item for _, message in socket.messages
+                for item in message.get("param", {}).get("statelist", [])]
+    mute_uuid = audio_contexts[2].split("___")[0]
+    deadline = time.monotonic() + 1
+    while len([item for item in state_items() if item.get("uuid") == mute_uuid
+               and item.get("type") == 1]) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    audio_payloads = []
+    for index, (action, icon) in enumerate(AUDIO_ACTIONS.items()):
+        uuid, key, actionid = audio_contexts[index].split("___")
+        items = [item for item in state_items() if item.get("uuid") == uuid]
+        audio_payloads.append(items)
+        if action == MUTE_TOGGLE_UUID:
+            if ([(item.get("type"), item.get("path"), item.get("data"), item.get("textData"),
+                   item.get("showtext"), item.get("key"), item.get("actionid"))
+                  for item in items] != [
+                    (1, None, mute_toggle_data_uri("55%", False), "", False, key, actionid),
+                    (1, None, mute_toggle_data_uri("Muted", True), "", False, key, actionid)]):
+                raise RuntimeError(f"Unexpected integrated mute-toggle payloads: {items}")
+        elif ([(item.get("type"), item.get("path"), item.get("textData"),
+                item.get("showtext"), item.get("key"), item.get("actionid"))
+               for item in items] != [
+                (2, icon, "55%", True, key, actionid),
+                (2, icon, "Muted", True, key, actionid)]):
+            raise RuntimeError(f"Unexpected integrated audio payloads: {items}")
+    toggle_display_uuid = transport_contexts[0].split("___")[0]
+    deadline = time.monotonic() + 1
+    while len([item for item in state_items() if item.get("uuid") == toggle_display_uuid
+               and item.get("path") == "./assets/play.svg"]) < 1 \
+            and time.monotonic() < deadline:
+        time.sleep(0.005)
+    transport_payloads = []
+    for index, (action, icon) in enumerate(TRANSPORT_DISPLAY.items()):
+        uuid, key, actionid = transport_contexts[index].split("___")
+        items = [item for item in state_items() if item.get("uuid") == uuid]
+        transport_payloads.append(items)
+        if action == TOGGLE_UUID:
+            if ([(item.get("type"), item.get("path"), item.get("textData"),
+                   item.get("showtext"), item.get("key"), item.get("actionid"))
+                  for item in items] != [
+                    (2, "./assets/pause.svg", "Pause", True, key, actionid),
+                    (2, "./assets/play.svg", "Play", True, key, actionid)]):
+                raise RuntimeError(f"Unexpected integrated toggle payloads: {items}")
+        elif ([(item.get("type"), item.get("path"), item.get("textData"),
+                item.get("showtext"), item.get("key"), item.get("actionid"))
+               for item in items] != [
+                (2, icon, "Previous" if action == PREVIOUS_UUID else "Next",
+                 True, key, actionid)]):
+            raise RuntimeError(f"Unexpected integrated transport payloads: {items}")
     if any(thread.name == "ulanzi-volume-repeat" for thread in threading.enumerate()):
         raise RuntimeError("Unexpected volume repeat scheduler thread")
     if not router.stop(timeout=0.5):
@@ -180,6 +277,9 @@ def inspect_sdk():
         "handler_counts": handler_counts,
         "synthetic_commands": probe_client.commands,
         "callbacks_nonblocking": True,
+        "mosaic_payloads": mosaic_payloads,
+        "audio_payloads": audio_payloads,
+        "transport_payloads": transport_payloads,
         "worker_display_payload": display_payload,
         "worker_settings_payload": settings_payload,
     }

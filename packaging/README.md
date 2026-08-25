@@ -34,12 +34,12 @@ provenance, forbidden modules/native files/PE imports, frozen native/codec fallb
 offline diagnostics privacy, and per-file hashes. Venv, wheelhouse, caches, outputs,
 manifests, and synthetic data remain outside the repository.
 
-## Isolated Ulanzi Runtime Spike
+## Ulanzi Plugin Release Package
 
-The repository plugin remains functional through `manifest.CodePath: src/app.js`.
-The launcher runtime is intentionally separate from both that Node implementation
-and the production companion. Build it and prepare a minimal disposable plugin
-package entirely outside the repository:
+The repository plugin remains functional through `manifest.CodePath: src/app.js` for
+in-repo Node.js development and testing. The launcher runtime is intentionally separate
+from that Node implementation and from the production companion. Build it and prepare
+the release plugin package entirely outside the repository:
 
 ```powershell
 $runtimeRoot = 'C:\approved-temp\ulanzi-runtime'
@@ -68,20 +68,25 @@ preparer validates those files, copies the launcher-facing assets and minimal ES
 package metadata without npm dependencies, and changes only the external manifest
 to `src/launcher.js`.
 
-Import the resulting external
-`package\com.arkamax404.mediacontrold200.ulanziPlugin` only for experimental
-testing. Its manifest exposes exactly eight Python actions: Now Playing, Previous,
-Play/Pause, Next, Volume Up, Volume Down, Mute Toggle, and Track Progress. The
-package includes the explicit music and offline fallbacks, every transport/audio
-asset, and the progress icon, inspector, and five browser SDK scripts referenced by
-that inspector. All eight actions use the existing authenticated loopback bridge.
-The four artwork mosaic actions and their assets remain deferred and are not copied.
+The resulting external
+`package\com.arkamax404.mediacontrold200.ulanziPlugin` is the release artifact: it is
+what ships to users through the Ulanzi Community Store and the GitHub release ZIP.
+Its manifest exposes exactly twelve Python actions: Now Playing, Previous,
+Play/Pause, Next, Volume Up, Volume Down, Mute Toggle, Track Progress, and the
+four artwork mosaic actions. The package includes the explicit music and offline
+fallbacks, every transport/audio asset, the four artwork tile icons, and the
+progress icon, inspector, and five browser SDK scripts referenced by that
+inspector. All twelve actions use the existing authenticated loopback bridge.
 The runtime retains the validated color and grayscale artwork bundle foundation so
-Now Playing can render color while playing, grayscale while paused, and the identical
-color data URI when playback resumes. Mute Toggle executes the command but does not
-yet update its icon or state dynamically. Generated executables and transformed
-manifests do not belong in the repository, and this spike does not replace the
-companion installer.
+Now Playing can render color while playing, grayscale while paused, and the
+identical color data URI when playback resumes, while the four mosaic actions
+render their exact artwork quadrants from the same bundle. Mute Toggle renders a
+generated composite showing the Spotify volume percent at the top plus the mute
+or unmute speaker icon; volume keys keep their host-rendered label; the dedicated
+Play/Pause key switches between play and pause icons with playback state, and
+Previous/Next render their transport labels. Generated
+executables and transformed manifests do not belong in the repository, and this
+packaged runtime does not replace the companion installer.
 
 Run events enter a bounded 16-item queue and one serial HTTP worker. Progress polls
 share that client, so each health request and its following state or command request

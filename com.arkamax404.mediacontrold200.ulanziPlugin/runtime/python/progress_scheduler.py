@@ -8,7 +8,7 @@ from typing import Callable
 
 from bridge_client import BridgeClient
 from artwork_bundle import ArtworkBundleCache
-from now_playing_action import (ACTION_UUID as NOW_PLAYING_UUID, MediaSnapshot,
+from now_playing_action import (DISPLAY_ACTION_UUIDS, MediaSnapshot,
                                 NowPlayingActionModel, normalize_media_snapshot,
                                 unavailable_media_snapshot)
 from progress_action import (ACTION_UUID, PersistenceRequest, ProgressActionModel,
@@ -88,7 +88,7 @@ class ProgressScheduler:
     def handle_add(self, event) -> bool:
         try:
             action = action_uuid_from_event(event)
-            if action not in (ACTION_UUID, NOW_PLAYING_UUID):
+            if action != ACTION_UUID and action not in DISPLAY_ACTION_UUIDS:
                 return False
             with self._artwork_lock:
                 had_active = bool(self.model.requests() or self.now_playing_model.requests())

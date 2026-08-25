@@ -79,16 +79,25 @@ class PackagingContractTests(unittest.TestCase):
             self.assertEqual(prepared["CodePath"], "src/launcher.js")
             self.assertEqual(
                 [action["UUID"] for action in prepared["Actions"]],
-                [f"{prepared['UUID']}.{suffix}" for suffix in preparer.PORTED_ACTION_SUFFIXES],
+                [f"{prepared['UUID']}.{suffix}" for suffix in (
+                    "nowplaying", "previous", "toggle", "next", "volume-up", "volume-down",
+                    "mute-toggle", "progress", "artwork-top-left", "artwork-top-right",
+                    "artwork-bottom-left", "artwork-bottom-right")],
             )
-            self.assertEqual(len(prepared["Actions"]), 8)
+            self.assertEqual(len(prepared["Actions"]), 12)
             self.assertEqual([action["Name"] for action in prepared["Actions"]], [
                 "Now Playing", "Previous", "Play/Pause", "Next", "Volume Up",
-                "Volume Down", "Mute Toggle", "Track Progress",
+                "Volume Down", "Mute Toggle", "Track Progress", "Artwork Top Left",
+                "Artwork Top Right", "Artwork Bottom Left", "Artwork Bottom Right",
             ])
+            progress_index = next(
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith(".progress")
+            )
             self.assertTrue(all("PropertyInspectorPath" not in action
-                                for action in prepared["Actions"][:-1]))
-            self.assertEqual(prepared["Actions"][-1]["PropertyInspectorPath"],
+                                for index, action in enumerate(prepared["Actions"])
+                                if index != progress_index))
+            self.assertEqual(prepared["Actions"][progress_index]["PropertyInspectorPath"],
                              preparer.PROPERTY_INSPECTOR_FILES[0])
             referenced_assets = {
                 prepared["Icon"],
@@ -103,7 +112,18 @@ class PackagingContractTests(unittest.TestCase):
                 for path in (target / "assets").rglob("*") if path.is_file()
             }
             self.assertEqual(copied_assets, referenced_assets)
-            self.assertFalse(any("artwork-" in asset for asset in copied_assets))
+            self.assertEqual({asset for asset in copied_assets if "artwork-" in asset},
+                             {"assets/artwork-top-left.svg", "assets/artwork-top-right.svg",
+                              "assets/artwork-bottom-left.svg",
+                              "assets/artwork-bottom-right.svg"})
+            self.assertEqual(copied_assets, {
+                "assets/music.svg", "assets/offline.svg", "assets/previous.svg",
+                "assets/play.svg", "assets/pause.svg", "assets/next.svg",
+                "assets/volume-up.svg", "assets/volume-down.svg", "assets/mute.svg",
+                "assets/unmute.svg", "assets/progress.svg", "assets/artwork-top-left.svg",
+                "assets/artwork-top-right.svg", "assets/artwork-bottom-left.svg",
+                "assets/artwork-bottom-right.svg",
+            })
             self.assertEqual((plugin / "manifest.json").read_bytes(), manifest_before)
             self.assertEqual((plugin / "package.json").read_bytes(), package_before)
             self.assertEqual({name: (plugin / name).read_bytes() for name in protected},

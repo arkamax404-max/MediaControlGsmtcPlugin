@@ -141,9 +141,9 @@ class FoundationTests(unittest.TestCase):
             for item in list(logger.handlers):
                 if item is not foreign: item.close(); logger.removeHandler(item)
             logger.removeHandler(foreign)
-    def test_readme_states_machine_scope_and_nondeployable_split(self):
+    def test_readme_states_machine_scope_and_local_threat_model(self):
         readme = Path(__file__).parents[1].joinpath("README.md").read_text(encoding="utf-8")
-        for phrase in ("machine-wide", "fixed loopback port", "not deployable", "Slice 1B", "malicious process running as the same Windows user"):
+        for phrase in ("machine-wide", "fixed loopback port", "Ulanzi Community Store", "malicious process running as the same Windows user"):
             self.assertIn(phrase, readme)
     def test_main_acquisition_matrix_releases_mutex_before_bridge(self):
         for failure in ("mutex", "paths", "token", "logging"):

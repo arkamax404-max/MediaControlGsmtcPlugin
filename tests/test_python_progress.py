@@ -19,7 +19,14 @@ from artwork_bundle import ArtworkBundle, ArtworkBundleCache  # noqa: E402
 from bridge_client import (BridgeArtworkResult, BridgeClient, BridgeResult,
                            BridgeStateResult)  # noqa: E402
 from now_playing_action import (ACTION_UUID as NOW_PLAYING_UUID,
-                                 MediaSnapshot, NowPlayingActionModel)  # noqa: E402
+                                AUDIO_ACTIONS,
+                                MOSAIC_ACTIONS,
+                                MUTE_TOGGLE_UUID,
+                                PREVIOUS_UUID,
+                                TOGGLE_UUID,
+                                TRANSPORT_DISPLAY,
+                                MediaSnapshot, NowPlayingActionModel,
+                                mute_toggle_data_uri)  # noqa: E402
 from progress_action import (  # noqa: E402
     ACTION_UUID,
     ProgressActionModel,
@@ -37,6 +44,7 @@ from progress_state import (  # noqa: E402
     unavailable_progress_state,
 )
 from progress_scheduler import ProgressScheduler, register_progress_handlers  # noqa: E402
+from transport_actions import TransportRouter  # noqa: E402
 
 
 TOKEN = "A" * 43
@@ -616,6 +624,300 @@ class PythonProgressTests(unittest.TestCase):
         self.assertTrue(all(send[0] == cover[0][0] != callback_thread for send in api.sends))
         self.assertTrue(scheduler.stop(.5))
 
+    def test_one_poll_and_fetch_drive_nowplaying_and_all_mosaic_tiles(self):
+        artwork_id = "6" * 64
+        bundle = ArtworkBundle(artwork_id, "color", "gray", ("tl", "tr", "bl", "br"))
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        artwork_id=artwork_id)
+
+        class Client:
+            def __init__(self): self.state_calls = self.artwork_calls = 0
+            def get_state(self, cancelled=None):
+                self.state_calls += 1; return BridgeStateResult("ok", payload, 200)
+            def get_artwork(self, requested, cancelled=None):
+                self.artwork_calls += 1; return BridgeArtworkResult("ok", bundle, 200)
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((threading.get_ident(), context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((threading.get_ident(), context, image, text)); return True
+
+        client, api = Client(), Api()
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=.2)
+        callback_thread = threading.get_ident(); scheduler.start()
+        scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"})
+        for index, action in enumerate(MOSAIC_ACTIONS):
+            scheduler.handle_add({"uuid": action, "context": f"tile-{index}"})
+        self.assertTrue(self._wait_for(lambda: all(any(send[2] == image for send in api.sends)
+                                                   for image in ("color", *bundle.tiles))))
+        self.assertEqual((client.state_calls, client.artwork_calls), (1, 1))
+        self.assertTrue(all(send[0] != callback_thread for send in api.sends))
+        self.assertFalse(scheduler.handle_run({"uuid": next(iter(MOSAIC_ACTIONS)),
+                                               "context": "tile-0"}))
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_shared_poll_renders_audio_actions_and_mute_icon_transition(self):
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        audio_available=True, volume_percent=55)
+
+        class Client:
+            def __init__(self): self.state_calls = 0
+            def get_state(self, cancelled=None):
+                self.state_calls += 1
+                muted = self.state_calls >= 2
+                return BridgeStateResult("ok", dict(payload, is_muted=muted), 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=.05)
+        scheduler.start()
+        for action in AUDIO_ACTIONS:
+            scheduler.handle_add({"uuid": action, "context": action})
+        self.assertTrue(self._wait_for(lambda: all(
+            any(send == (action, icon, "55%") for send in api.sends)
+            for action, icon in AUDIO_ACTIONS.items()
+            if action != MUTE_TOGGLE_UUID), 1))
+        self.assertTrue(self._wait_for(lambda: any(
+            send == (MUTE_TOGGLE_UUID, mute_toggle_data_uri("55%", False), "")
+            for send in api.sends), 1))
+        self.assertTrue(self._wait_for(lambda: any(
+            send == (MUTE_TOGGLE_UUID, mute_toggle_data_uri("Muted", True), "")
+            for send in api.sends), 1))
+        self.assertEqual([send for send in api.sends if send[0] == MUTE_TOGGLE_UUID], [
+            (MUTE_TOGGLE_UUID, mute_toggle_data_uri("55%", False), ""),
+            (MUTE_TOGGLE_UUID, mute_toggle_data_uri("Muted", True), ""),
+        ])
+        for action, icon in AUDIO_ACTIONS.items():
+            if action == MUTE_TOGGLE_UUID:
+                continue
+            self.assertEqual([send for send in api.sends if send[0] == action], [
+                (action, icon, "55%"), (action, icon, "Muted"),
+            ])
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_mute_command_polls_immediately_and_updates_display(self):
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        audio_available=True, volume_percent=55)
+
+        class Client:
+            def __init__(self): self.commands = []; self.state_calls = 0
+            def execute(self, command, cancelled=None):
+                self.commands.append(command)
+                return BridgeResult(command, "ok", 200)
+            def get_state(self, cancelled=None):
+                self.state_calls += 1
+                return BridgeStateResult(
+                    "ok", dict(payload, is_muted=bool(self.commands)), 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        router = TransportRouter(client)
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=5)
+        router.configure_runtime(scheduler.handle_run, scheduler.request_poll)
+        router.start(); scheduler.start()
+        scheduler.handle_add({"uuid": MUTE_TOGGLE_UUID, "context": "mute"})
+        self.assertTrue(self._wait_for(lambda: api.sends == [
+            ("mute", mute_toggle_data_uri("55%", False), "")], 1))
+        self.assertTrue(router.handle_run({"uuid": MUTE_TOGGLE_UUID, "context": "mute"}))
+        self.assertTrue(self._wait_for(lambda: api.sends == [
+            ("mute", mute_toggle_data_uri("55%", False), ""),
+            ("mute", mute_toggle_data_uri("Muted", True), ""),
+        ], 1))
+        self.assertEqual(client.commands, ["mute-toggle"])
+        self.assertGreaterEqual(client.state_calls, 2,
+                                "successful mute command must trigger an immediate poll")
+        self.assertTrue(router.stop(.5))
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_audio_clear_and_inactive_contexts_never_render(self):
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        audio_available=True, volume_percent=55)
+
+        class Client:
+            def __init__(self): self.state_calls = 0; self.gate = threading.Event()
+            def get_state(self, cancelled=None):
+                self.state_calls += 1
+                muted = self.state_calls >= 2
+                if self.state_calls == 2:
+                    self.gate.wait(1)
+                return BridgeStateResult("ok", dict(payload, is_muted=muted), 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=.04)
+        scheduler.start()
+        scheduler.handle_add({"uuid": MUTE_TOGGLE_UUID, "context": "gone"})
+        scheduler.handle_add({"uuid": MUTE_TOGGLE_UUID, "context": "sleeping"})
+        scheduler.handle_add({"uuid": "com.arkamax404.ulanzi.mediacontrol.volume-up",
+                              "context": "kept"})
+        self.assertTrue(self._wait_for(lambda: len(api.sends) == 3, 1))
+        scheduler.handle_set_active({"context": "sleeping", "active": False})
+        self.assertTrue(scheduler.handle_clear({"param": [{"context": "gone"}]}))
+        client.gate.set()
+        self.assertTrue(self._wait_for(lambda: any(
+            send == ("kept", "./assets/volume-up.svg", "Muted") for send in api.sends), 1))
+        self.assertEqual([send for send in api.sends if send[0] != "kept"], [
+            ("gone", mute_toggle_data_uri("55%", False), ""),
+            ("sleeping", mute_toggle_data_uri("55%", False), ""),
+        ], "cleared and inactive audio contexts must not re-render on later polls")
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_shared_poll_renders_transport_actions_and_toggle_transition(self):
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat())
+
+        class Client:
+            def __init__(self): self.state_calls = 0
+            def get_state(self, cancelled=None):
+                self.state_calls += 1
+                return BridgeStateResult(
+                    "ok", dict(payload, is_playing=self.state_calls >= 2), 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=.05)
+        scheduler.start()
+        for action in TRANSPORT_DISPLAY:
+            scheduler.handle_add({"uuid": action, "context": action})
+        self.assertTrue(self._wait_for(lambda: all(
+            any(send == (action, TRANSPORT_DISPLAY[action],
+                         "Previous" if action == PREVIOUS_UUID else "Next")
+                for send in api.sends)
+            for action in TRANSPORT_DISPLAY if action != TOGGLE_UUID), 1))
+        self.assertTrue(self._wait_for(lambda: any(
+            send == (TOGGLE_UUID, "./assets/play.svg", "Play")
+            for send in api.sends), 1))
+        self.assertTrue(self._wait_for(lambda: any(
+            send == (TOGGLE_UUID, "./assets/pause.svg", "Pause")
+            for send in api.sends), 1))
+        self.assertEqual([send for send in api.sends if send[0] == TOGGLE_UUID], [
+            (TOGGLE_UUID, "./assets/play.svg", "Play"),
+            (TOGGLE_UUID, "./assets/pause.svg", "Pause"),
+        ], "a play/pause transition re-renders the dedicated toggle button exactly once")
+        for action in TRANSPORT_DISPLAY:
+            if action == TOGGLE_UUID:
+                continue
+            self.assertEqual(len([send for send in api.sends if send[0] == action]), 1,
+                             "static transport labels dedup across polls")
+        self.assertFalse(scheduler.handle_run({"uuid": TOGGLE_UUID, "context": TOGGLE_UUID}))
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_toggle_command_polls_immediately_and_updates_display(self):
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        is_playing=False)
+
+        class Client:
+            def __init__(self): self.commands = []; self.state_calls = 0
+            def execute(self, command, cancelled=None):
+                self.commands.append(command)
+                return BridgeResult(command, "ok", 200)
+            def get_state(self, cancelled=None):
+                self.state_calls += 1
+                return BridgeStateResult(
+                    "ok", dict(payload, is_playing=bool(self.commands)), 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        router = TransportRouter(client)
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=5)
+        router.configure_runtime(scheduler.handle_run, scheduler.request_poll)
+        router.start(); scheduler.start()
+        scheduler.handle_add({"uuid": TOGGLE_UUID, "context": "toggle"})
+        self.assertTrue(self._wait_for(lambda: api.sends == [
+            ("toggle", "./assets/play.svg", "Play")], 1))
+        self.assertTrue(router.handle_run({"uuid": TOGGLE_UUID, "context": "toggle"}))
+        self.assertTrue(self._wait_for(lambda: api.sends == [
+            ("toggle", "./assets/play.svg", "Play"),
+            ("toggle", "./assets/pause.svg", "Pause"),
+        ], 1))
+        self.assertEqual(client.commands, ["toggle"])
+        self.assertGreaterEqual(client.state_calls, 2,
+                                "successful toggle command must trigger an immediate poll")
+        self.assertTrue(router.stop(.5))
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_transport_clear_and_inactive_contexts_never_render(self):
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        is_playing=False)
+
+        class Client:
+            def __init__(self): self.state_calls = 0; self.gate = threading.Event()
+            def get_state(self, cancelled=None):
+                self.state_calls += 1
+                playing = self.state_calls >= 2
+                if self.state_calls == 2:
+                    self.gate.wait(1)
+                return BridgeStateResult("ok", dict(payload, is_playing=playing), 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=lambda: NOW, poll_interval=.04)
+        scheduler.start()
+        scheduler.handle_add({"uuid": TOGGLE_UUID, "context": "gone"})
+        scheduler.handle_add({"uuid": PREVIOUS_UUID, "context": "sleeping"})
+        scheduler.handle_add({"uuid": TOGGLE_UUID, "context": "kept"})
+        self.assertTrue(self._wait_for(lambda: len(api.sends) == 3, 1))
+        scheduler.handle_set_active({"context": "sleeping", "active": False})
+        self.assertTrue(scheduler.handle_clear({"param": [{"context": "gone"}]}))
+        client.gate.set()
+        self.assertTrue(self._wait_for(lambda: any(
+            send == ("kept", "./assets/pause.svg", "Pause") for send in api.sends), 1))
+        self.assertEqual([send for send in api.sends if send[0] != "kept"], [
+            ("gone", "./assets/play.svg", "Play"),
+            ("sleeping", "./assets/previous.svg", "Previous"),
+        ], "cleared and inactive transport contexts must not re-render on later polls")
+        self.assertTrue(scheduler.stop(.5))
+
     def test_nowplaying_failed_fetch_retries_on_poll_and_playback_reuses_bundle(self):
         artwork_id = "b" * 64
         bundle = ArtworkBundle(artwork_id, "color", "gray", ("1", "2", "3", "4"))
@@ -676,16 +978,17 @@ class PythonProgressTests(unittest.TestCase):
         scheduler = ProgressScheduler(api, client, ProgressActionModel(),
                                       NowPlayingActionModel(), cache,
                                       clock=lambda: NOW, poll_interval=.5)
-        scheduler.start(); scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"})
+        mosaic_action = next(iter(MOSAIC_ACTIONS))
+        scheduler.start(); scheduler.handle_add({"uuid": mosaic_action, "context": "cover"})
         self.assertTrue(client.entered.wait(.5))
         started = time.monotonic()
         self.assertTrue(scheduler.handle_clear({"param": [{"context": "cover"}]}))
-        self.assertTrue(scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"}))
+        self.assertTrue(scheduler.handle_add({"uuid": mosaic_action, "context": "cover"}))
         self.assertLess(time.monotonic() - started, .05)
         client.release.set(); time.sleep(.04)
         self.assertEqual(client.fetches, 2, "recreated context receives its own poll attempt")
         self.assertIsNone(cache.get(artwork_id))
-        self.assertNotIn("stale-color", api.images)
+        self.assertNotIn("1", api.images)
         self.assertTrue(scheduler.stop(.5))
 
     def test_artwork_install_reservation_linearizes_all_invalidations(self):
@@ -734,9 +1037,11 @@ class PythonProgressTests(unittest.TestCase):
                     cache, api = GatedCache(), Api()
                     scheduler = ProgressScheduler(api, Client(), ProgressActionModel(),
                                                   model, cache, clock=lambda: NOW)
-                    model.add({"uuid": NOW_PLAYING_UUID, "context": "changing"})
+                    display_action = (next(iter(MOSAIC_ACTIONS))
+                                      if invalidation == "two-context" else NOW_PLAYING_UUID)
+                    model.add({"uuid": display_action, "context": "changing"})
                     if invalidation == "two-context":
-                        model.add({"uuid": NOW_PLAYING_UUID, "context": "steady"})
+                        model.add({"uuid": display_action, "context": "steady"})
                     scheduler._media_state = snapshot
                     cache.begin(artwork_id)
 
@@ -773,7 +1078,7 @@ class PythonProgressTests(unittest.TestCase):
                         scheduler.handle_set_active({"context": "changing", "active": False})
                     elif invalidation in ("recreate", "two-context"):
                         scheduler.handle_clear({"param": [{"context": "changing"}]})
-                        scheduler.handle_add({"uuid": NOW_PLAYING_UUID,
+                        scheduler.handle_add({"uuid": display_action,
                                               "context": "changing"})
                     elif invalidation == "artwork-id":
                         cache.begin(other_id)
@@ -788,7 +1093,7 @@ class PythonProgressTests(unittest.TestCase):
                     self.assertIsNone(cache.get(artwork_id))
 
                     if invalidation == "two-context" and install_first:
-                        self.assertEqual(api.sends, [("steady", "old-color")])
+                        self.assertEqual(api.sends, [("steady", "1")])
                     else:
                         self.assertEqual(api.sends, [])
                     current = model.requests()

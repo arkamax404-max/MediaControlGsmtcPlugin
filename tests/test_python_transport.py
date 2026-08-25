@@ -133,7 +133,7 @@ class PythonTransportTests(unittest.TestCase):
         self.assertEqual(client.commands, list(mixed))
         self.assertTrue(router.stop())
 
-    def test_router_is_single_run_authority_and_polls_only_after_successful_toggles(self):
+    def test_router_is_single_run_authority_and_polls_after_every_successful_command(self):
         class Client:
             def __init__(self):
                 self.commands = []
@@ -153,11 +153,18 @@ class PythonTransportTests(unittest.TestCase):
         self.assertTrue(router.handle_run(progress))
         self.assertEqual(routed, [progress])
         for uuid in (f"{PLUGIN_UUID}.toggle", f"{PLUGIN_UUID}.nowplaying",
-                     f"{PLUGIN_UUID}.nowplaying"):
+                     f"{PLUGIN_UUID}.volume-up", f"{PLUGIN_UUID}.previous",
+                     f"{PLUGIN_UUID}.next"):
             self.assertTrue(router.handle_run({"uuid": uuid}))
-        self.assertTrue(wait_for(lambda: len(client.commands) == 3))
-        self.assertEqual(client.commands, ["toggle", "toggle", "toggle"])
-        self.assertEqual(polls, [("toggle",), ("toggle", "toggle")])
+        self.assertTrue(wait_for(lambda: len(client.commands) == 5))
+        self.assertTrue(wait_for(lambda: len(polls) == 4))
+        self.assertEqual(client.commands, ["toggle", "toggle", "volume-up", "previous", "next"])
+        self.assertEqual(polls, [
+            ("toggle",),
+            ("toggle", "toggle"),
+            ("toggle", "toggle", "volume-up", "previous"),
+            ("toggle", "toggle", "volume-up", "previous", "next"),
+        ], "poll must follow every successful command and skip failures")
         self.assertTrue(router.stop())
 
     def test_bridge_client_matches_health_auth_and_command_contract(self):

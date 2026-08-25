@@ -1,130 +1,117 @@
 # Media Control for D200
 
 Media Control for D200 is a local Windows integration that connects Spotify Desktop to an
-Ulanzi D200 through Windows GSMTC, Core Audio, a loopback Python bridge, and an
-Ulanzi Studio plugin. It requires no cloud service or account configuration.
+Ulanzi D200 through Windows GSMTC, Core Audio, a loopback Python bridge, and an Ulanzi
+Studio plugin. It requires no cloud service or account configuration: every component runs
+on the same machine and communicates over loopback only.
 
-## D200 Quick Path
+## Requirements
 
-Requirements: Windows 10/11, Spotify Desktop, Ulanzi Studio 2.1.4 or newer,
-Python 3.11 or newer, and Node.js 20.12.2 or newer with npm. Python 3.11 is
-the current minimum because the bridge uses the 3.11 `asyncio.wait_for`
-`TimeoutError` behavior in addition to Python 3.10 syntax. Core Audio support
-is pinned to `pycaw==20251023`, `comtypes==1.4.16`, and `psutil==7.2.2` on
-Windows. Pillow processes GSMTC artwork locally in memory.
+- Windows 10/11
+- Spotify Desktop
+- Ulanzi Studio 2.1.4 or newer with a D200 device
+- The local companion bridge, installed either through the companion installer
+  (see `installer\README.md`) or manually with Python 3.11 or newer
 
-1. Confirm the supported tool versions from the project root:
+The plugin package itself is self-contained: it runs on Ulanzi Studio's embedded Node.js
+and a frozen Python runtime, so plugin users do not install Python, Node.js, or npm.
 
-   ```powershell
-   python -c "import sys; assert sys.version_info >= (3, 11), 'Python 3.11 or newer is required'"
-   node -e "const [major, minor, patch] = process.versions.node.split('.').map(Number); if (major < 20 || (major === 20 && (minor < 12 || (minor === 12 && patch < 2)))) throw new Error('Node.js 20.12.2 or newer is required')"
-   ```
+## Components
 
-   The Node.js requirement is also declared in the plugin's `package.json` and
-   `package-lock.json`.
+Two pieces cooperate:
 
-2. Install Python dependencies from the project root:
+1. **Companion bridge** — a Python service that subscribes to Windows GSMTC and Core
+   Audio, caches media state and artwork, and exposes a token-authenticated API on
+   `http://127.0.0.1:43821` only.
+2. **Plugin** — an Ulanzi Studio plugin with twelve actions. A small Node.js launcher
+   starts the bundled frozen Python runtime, which polls the bridge and renders every key.
 
-   ```powershell
-   python -m pip install -r requirements.txt
-   ```
+### Companion setup
 
-   `requirements.txt` remains the canonical dependency input for the production
-   bridge. Its Windows dependencies are pinned, but the bridge does not use a
-   resolved lock file. The experimental Ulanzi runtime spike separately uses the
-   hash-locked `packaging/requirements-ulanzi-bootstrap.lock` and
-   `packaging/requirements-ulanzi-runtime.lock` build inputs.
+Option A — companion installer (recommended): build the per-user installer with
+`installer\build_installer.ps1` as described in `installer\README.md`. It installs the
+bridge under `%LOCALAPPDATA%\Programs\GSMTCD200Controller`, registers an interactive
+per-user scheduled task, applies token ACL hardening, and keeps the token, logs, and
+diagnostics under `%LOCALAPPDATA%\GSMTCD200Controller`.
 
-3. Start the loopback GSMTC bridge and leave it running:
+Option B — manual: from the project root,
 
-   ```powershell
-   python -m d200_bridge
-   ```
+```powershell
+python -m pip install -r requirements.txt
+python -m d200_bridge
+```
 
-   It listens only on `http://127.0.0.1:43821`. Verify it with
-   `Invoke-RestMethod http://127.0.0.1:43821/health`.
+The bridge listens only on `http://127.0.0.1:43821`. Verify it with
+`Invoke-RestMethod http://127.0.0.1:43821/health`. It is single-instance; stop a
+foreground instance with `python -m d200_bridge --stop`. A privacy-filtered diagnostics
+bundle can be produced without starting the bridge using
+`python -m d200_bridge --diagnose`.
 
-   The companion is single-instance. Stop a contributor foreground instance
-   through its normal cleanup path with `python -m d200_bridge --stop`; signals
-   and this command share the same asynchronous stop event.
+### Plugin installation
 
-   **Slice 1A + Slice 1B status:** the authenticated backend/plugin source contract is
-   locally complete, but it is not deployable or packaged yet. Installer-managed
-   token DACL hardening and physical Studio/device checks remain required.
+- **Ulanzi Community Store**: once published, search for *Media Control for D200*.
+- **Manual**: download `com.arkamax404.mediacontrold200.ulanziPlugin.zip` from the
+  latest [GitHub release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases),
+  then use Ulanzi Studio's plugin import interface and select the extracted
+  `com.arkamax404.mediacontrold200.ulanziPlugin` folder. Restart Studio if the plugin
+  list does not refresh.
 
-   Create a local privacy-filtered diagnostics bundle without starting the bridge:
+Assign the desired actions from the `Media Control for D200` category to D200 keys.
 
-   ```powershell
-   python -m d200_bridge --diagnose
-   ```
+## The Twelve Actions
 
-   The ZIP is written under `%LOCALAPPDATA%\GSMTCD200Controller\diagnostics` and
-   contains bounded version/runtime summaries, allowlisted dependency versions,
-   and sanitized companion log events. Review the ZIP before sharing it. No title,
-   artist, artwork, token, username, hostname, command line, or environment is included.
+| Action | Press behavior | Key display |
+|---|---|---|
+| Now Playing | Toggle play/pause | Full artwork: color while playing, grayscale while paused, with title and artist |
+| Previous | Previous track | Transport icon with `Previous` label |
+| Play/Pause | Toggle play/pause | `Pause` icon while playing, `Play` icon while paused |
+| Next | Next track | Transport icon with `Next` label |
+| Volume Up | Spotify volume +5 points | Volume icon with the current percentage |
+| Volume Down | Spotify volume −5 points | Volume icon with the current percentage |
+| Mute Toggle | Mute or unmute Spotify | Generated key: volume percentage at the top, speaker icon below |
+| Track Progress | Cycle time mode | Circular progress arc with the selected time |
+| Artwork Top Left | None (display only) | Top-left 196×196 quadrant of the artwork |
+| Artwork Top Right | None (display only) | Top-right quadrant of the artwork |
+| Artwork Bottom Left | None (display only) | Bottom-left quadrant of the artwork |
+| Artwork Bottom Right | None (display only) | Bottom-right quadrant of the artwork |
 
-4. Install the plugin's locked Node.js dependencies once:
+Every action renders its own fallback when the companion is unreachable
+(`Offline`), not yet configured (`Companion setup required`), or running an
+incompatible API version (`Incompatible companion`).
 
-   ```powershell
-   cd com.arkamax404.mediacontrold200.ulanziPlugin
-   npm ci
-   ```
+### Now Playing
 
-   The pinned Ulanzi SDK files are already vendored under `vendor\ulanzi-sdk`.
-   `setup-sdk.ps1` is a maintainer recovery/refresh command, not a normal clean
-   install step. Run it only when those vendored files are missing or when
-   intentionally restoring them to their recorded pins:
+The key displays the GSMTC thumbnail with the track title and artist. While playing it
+uses the bridge's color PNG; while paused it uses the matching grayscale PNG of the same
+artwork, and on resume it restores the identical color image. If no artwork is available
+it falls back to a bundled music icon. Pressing the key toggles play/pause exactly once
+per press.
 
-   ```powershell
-   .\setup-sdk.ps1
-   ```
+### Transport keys
 
-   The script downloads four Node runtime files from the official Ulanzi
-   `plugin-common-node` repository at commit
-   `112bd13a7ff9d45bd68656f7e069fd61851d1812` and five Property Inspector
-   scripts from the official SDK's `plugin-common-html` pin
-   `79de0b0b087546e684afd23f97223f7a7bc392da`. It verifies every SHA-256
-   checksum, preserves the Node runtime's Apache-2.0 license, and records
-   provenance for both upstream sources. `node_modules` is not part of the
-   project-owned plugin files. See `THIRD_PARTY_NOTICES.md` for the locally
-   verifiable license boundary.
+Previous, Play/Pause, and Next send exactly one command per press through the shared
+command queue. The dedicated Play/Pause key reflects local playback state: it shows the
+pause icon while playing and the play icon while paused, so the state is visible without
+the artwork. Previous and Next keep static icons with their labels.
 
-   The source manifest deliberately keeps `CodePath: src/app.js`; this is the
-   functional Node runtime that implements all current actions. The separate
-   JavaScript launcher and Python harness are an experimental lifecycle spike and
-   do not replace this entrypoint until the action handlers are migrated.
+### Volume and mute
 
-5. Use Ulanzi Studio's plugin import/install interface and select the complete
-   `com.arkamax404.mediacontrold200.ulanziPlugin` folder. Restart Studio if the plugin
-   list does not refresh. Official SDK documentation describes installation into a
-   designated plugin folder but does not publish a stable Windows filesystem path,
-   so this project intentionally does not invent one.
+The volume actions operate only on Core Audio sessions owned by `Spotify.exe`. They
+never change the Windows master volume, endpoint volume, other applications, or media
+playback. Volume changes by five percentage points per press, clamps to 0-100%, and
+preserves mute. Mute Toggle applies one aggregate rule to all current Spotify sessions:
+mute all if any is unmuted, otherwise unmute all.
 
-6. Assign the desired actions from the `Media Control for D200` category to D200 keys.
-   The existing `Now Playing`, `Track Progress`, transport, and volume actions
-   remain available alongside the four artwork mosaic actions.
+Volume Up and Volume Down show the current percentage, `Muted`, `Mixed`, `No audio`, or
+`Offline`. Mute Toggle renders a generated key image with the Spotify volume percentage
+at the top and a speaker icon below — the muted speaker while audio is active and the
+unmuted speaker while muted — switching to `Muted`, `Mixed`, or `No audio` states as
+appropriate.
 
-7. Select the `Track Progress` key in Studio to configure its colors and stroke
-   width. Each key instance keeps its own settings. Native color inputs and
-   visible HEX fields are both available.
-
-For experimental Python transport testing, follow `Isolated Ulanzi Runtime Spike`
-in `packaging\README.md`. That procedure creates a disposable plugin package
-outside the repository, changes only the copied manifest to `src/launcher.js`,
-and exposes exactly eight ported actions: Now Playing, Previous, Play/Pause, Next,
-Volume Up, Volume Down, Mute Toggle, and Track Progress. Its explicit music and
-offline fallbacks and the progress inspector are included. The four artwork mosaic
-actions and their assets remain deferred, while the validated color and grayscale
-bundle foundation remains available for Now Playing's Play/Pause rendering. The
-Python Mute Toggle action does not yet update its icon or state dynamically.
-
-The now-playing key displays the GSMTC thumbnail with title and artist. It uses
-the bridge's color PNG while playing and its matching grayscale PNG while paused;
-if the grayscale variant is unavailable, it keeps the color PNG and title text
-without changing framing. If artwork is missing it uses a bundled music icon.
-Artwork processing stays in memory and makes no remote API request. Controls
-operate the Spotify Desktop GSMTC session when present, otherwise the current
-Windows media session. The play/pause key tracks local playback state.
+`pycaw`'s stable `GetAllSessions()` API enumerates sessions on the default render
+endpoint. Spotify sessions playing through another render endpoint are therefore outside
+this implementation; the bridge intentionally does not use lower-level unsafe COM
+enumeration or `IAudioEndpointVolume` as a fallback.
 
 ### Artwork Mosaic
 
@@ -135,42 +122,28 @@ Artwork Top Left     | Artwork Top Right
 Artwork Bottom Left  | Artwork Bottom Right
 ```
 
-Together they display one centered 392x392 color artwork image. The complete
-source image is preserved: non-square media uses transparent letterboxing or
-pillarboxing so the D200's black key background shows through instead of cropping
-the artwork. Each key receives one exact 196x196 PNG quadrant. The mosaic remains
-in color while playback is paused. These four buttons have no press functionality
-yet; pressing them sends no command and changes no playback or local mode state.
-The polled state contains only an artwork content ID. The plugin fetches one
-immutable color, grayscale, and four-tile bundle when that ID changes, then
-shares the validated bundle across every artwork key instead of retransmitting
-images on each state poll.
-
-The volume actions operate only on Core Audio sessions owned by `Spotify.exe`.
-They never change the Windows master volume, endpoint volume, other applications,
-or media playback. Volume changes by five percentage points per press, clamps to
-0-100%, and preserves mute. Mute Toggle applies one aggregate rule to all current
-Spotify sessions: mute all if any is unmuted, otherwise unmute all. The keys show
-the current percentage, `Muted`, `Mixed`, `No audio`, or `Offline`.
-
-`pycaw`'s stable `GetAllSessions()` API enumerates sessions on the default render
-endpoint. Spotify sessions playing through another render endpoint are therefore
-outside this implementation; the bridge intentionally does not use lower-level
-unsafe COM enumeration or `IAudioEndpointVolume` as a fallback.
+Together they display one centered 392x392 color artwork image. The complete source
+image is preserved: non-square media uses transparent letterboxing or pillarboxing so
+the D200's black key background shows through instead of cropping the artwork. Each key
+receives one exact 196x196 PNG quadrant. The mosaic remains in color while playback is
+paused. These four buttons are display-only: pressing them sends no command and changes
+no playback or local mode state. The polled state contains only an artwork content ID;
+the plugin fetches one immutable color, grayscale, and four-tile bundle when that ID
+changes, then shares the validated bundle across every artwork key instead of
+retransmitting images on each state poll.
 
 ### Track Progress
 
-The circular arc starts at 12 o'clock and always shows the played fraction. The
-centered label defaults to remaining time. Press the progress key to cycle that
-key through remaining, elapsed, and total time, then back to remaining. This
-display-only interaction sends no playback command and does not change the ring's
-progress or animation. Each key keeps its mode for the current session and resets
-to remaining when its context is recreated.
+The circular arc starts at 12 o'clock and always shows the played fraction. The centered
+label defaults to remaining time. Press the progress key to cycle that key through
+remaining, elapsed, and total time, then back to remaining. This display-only
+interaction sends no playback command. Each key keeps its mode for the current session
+and resets to remaining when its context is recreated.
 
-Labels use `m:ss`, or `h:mm:ss` for durations of at least one hour, and shrink to
-fit longer values or thicker configured strokes while staying centered. Remaining
-time uses ceiling rounding so a playing track does not show `0:00` before it ends.
-Pause freezes the display; the final remaining-time state renders `0:00` once.
+Labels use `m:ss`, or `h:mm:ss` for durations of at least one hour, and shrink to fit
+longer values or thicker configured strokes while staying centered. Remaining time uses
+ceiling rounding so a playing track does not show `0:00` before it ends. Pause freezes
+the display; the final remaining-time state renders `0:00` once.
 
 | Setting | Default | Accepted value |
 |---|---:|---|
@@ -180,26 +153,23 @@ Pause freezes the display; the final remaining-time state renders `0:00` once.
 | Background color | `#000000` | `#RRGGBB` |
 | Stroke width | `14` | Integer `6`-`30` |
 
-The plugin animates active progress keys with one shared timer, at most once per
-second, while playback is running. The existing `/state` polling remains one
-shared loop. Studio settings and inspector input are treated as untrusted and are
-normalized again in the Node runtime before rendering SVG.
+Select the Track Progress key in Studio to configure its colors and stroke width. Each
+key instance keeps its own settings. Native color inputs and visible HEX fields are both
+available. Settings and inspector input are treated as untrusted and normalized again in
+the Python runtime before rendering SVG.
 
-GSMTC owns the timeline data. Some applications, streams, advertisements, or
-session transitions may temporarily expose no duration; the key then shows
-`No timeline`. The bridge corrects a fresh GSMTC position with
-`last_updated_time`, publishes a new UTC anchor, and refreshes that anchor from
-events and periodic polling rather than extrapolating indefinitely from wall
-clock alone.
+GSMTC owns the timeline data. Some applications, streams, advertisements, or session
+transitions may temporarily expose no duration; the key then shows `No timeline`.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| Keys show `Offline` | Start `python -m d200_bridge`; verify `/health`; keep both apps on the same machine. |
+| Keys show `Offline` | Start the companion bridge; verify `/health`; keep both apps on the same machine. |
+| Keys show `Companion setup required` | The plugin could not read the bridge token; confirm the companion was set up for the same Windows user. |
 | Music icon instead of cover | The active GSMTC session did not provide a thumbnail; controls and text still work. |
 | Wrong media app is shown | Start playback in Spotify Desktop. Spotify sessions take precedence over the Windows current session. |
-| Plugin is absent in Studio | Import the whole `.ulanziPlugin` folder after `npm ci`; confirm Studio is at least 2.1.4. |
+| Plugin is absent in Studio | Import the whole `.ulanziPlugin` folder; confirm Studio is at least 2.1.4. |
 | State stops changing | Restart the bridge. State older than 15 seconds is shown as offline rather than as current. |
 | Volume key shows `No audio` | Start Spotify Desktop and ensure it has a Core Audio session on the default render endpoint. |
 | Volume key shows `Mixed` | Multiple Spotify sessions disagree on volume or mute; the next action still applies once to each accessible session. |
@@ -210,55 +180,86 @@ clock alone.
 ## Architecture
 
 ```text
-Spotify Desktop -> Windows GSMTC -> Python cache/API (127.0.0.1:43821)
-                                      ^
-                                      | local HTTP every 1.5 s
-Ulanzi D200 <- Ulanzi Studio <- Node plugin
+Spotify Desktop -> Windows GSMTC -> Python companion (127.0.0.1:43821)
+                                        ^
+                                        | local HTTP polling every 1.5 s
+Ulanzi D200 <- Ulanzi Studio <- plugin (Node launcher + frozen Python runtime)
 ```
 
-The bridge subscribes to GSMTC media, playback, and timeline changes and performs
-a five-second local refresh for freshness and recovery. Timeline-only events do
-not reread media properties or thumbnails. Media, timeline, and audio are cached independently;
+The bridge subscribes to GSMTC media, playback, and timeline changes and performs a
+five-second local refresh for freshness and recovery. Timeline-only events do not reread
+media properties or thumbnails. Media, timeline, and audio are cached independently:
 `available` remains GSMTC media state, while `audio_available`, `volume_percent`,
 `is_muted`, `audio_session_count`, and `audio_mixed` describe Spotify Core Audio.
 `timeline_available`, `position_seconds`, `duration_seconds`, `playback_rate`, and
 `position_updated_at` describe the normalized timeline anchor.
+
 Its API is limited to `GET /health`, `GET /state`, `GET /artwork/{artwork_id}`, and
 `POST /command/{previous,toggle,next,volume-up,volume-down,mute-toggle}`, plus
-`POST /lifecycle/stop`. Health exposes bounded companion/API identity and lifecycle
-state. Every other route requires the per-user Bearer token. The plugin loads that
-token locally, authenticates every bridge request, and rechecks API compatibility
-before every poll and command. Each check reloads the token, and commands pin the
-validated companion instance. It has no CORS support, remote bind, shell
-execution, cloud component, or device-discovery loop. The plugin connects to Studio
-through its launch-provided local WebSocket arguments and polls only the bridge.
+`POST /lifecycle/stop`. Every route except health requires the per-user Bearer token.
+The plugin loads that token locally, authenticates every bridge request, and rechecks
+API compatibility before every poll and command. Commands pin the validated companion
+instance. The API has no CORS support, remote bind, shell execution, cloud component,
+or device-discovery loop.
+
+The plugin runtime connects to Studio through its launch-provided local WebSocket
+arguments, renders keys through one scheduler worker, and sends transport commands
+through one bounded serial queue. A successful command triggers one immediate state
+poll so key displays update right away.
 
 Mutable data is independent of the working directory under
 `%LOCALAPPDATA%\GSMTCD200Controller`: `config\bridge-token`, rotating UTF-8 logs in
 `logs`, and reserved `cache` and `diagnostics` roots. The token persists across
-launches and is never returned or logged. Python creates the file atomically with
-the restrictive semantics available to the standard library; a proven user-only
-Windows DACL remains installer work. No PyInstaller bundle, installer, scheduled
-task, or installable companion package exists in this slice.
+launches and is never returned or logged. Python creates the file atomically with the
+restrictive semantics available to the standard library; the companion installer
+additionally applies user-only ACL hardening.
 
-Token authentication blocks browser-origin and accidental loopback callers; it
-does not defend against a malicious process running as the same Windows user.
-Path metadata checks are best-effort misconfiguration defense, not race-free
-containment. Installer-managed user-only DACL hardening remains required.
+Token authentication blocks browser-origin and accidental loopback callers; it does not
+defend against a malicious process running as the same Windows user. Path metadata
+checks are best-effort misconfiguration defense, not race-free containment.
 
 A machine-wide named mutex coordinates ownership of the fixed loopback port across
 Windows sessions. If that namespace is inaccessible, startup fails closed; it never
-kills or replaces another process. The fixed port therefore permits only one
-companion instance per machine.
+kills or replaces another process. The fixed port therefore permits only one companion
+instance per machine.
 
-**Local-only guarantee:** the bridge and plugin use Windows GSMTC, Core Audio,
-and loopback traffic only. They do not communicate with cloud services.
+**Local-only guarantee:** the bridge and plugin use Windows GSMTC, Core Audio, and
+loopback traffic only. They do not communicate with cloud services.
+
+## Development
+
+The repository contains the plugin source, the companion bridge, the packaging that
+produces the release plugin folder, and the per-user companion installer.
+
+- Plugin source: `com.arkamax404.mediacontrold200.ulanziPlugin`
+- Companion bridge: `d200_bridge`
+- Release packaging: `packaging\README.md` (builds the frozen runtime and the
+  twelve-action plugin folder whose manifest points at `src/launcher.js`)
+- Companion installer: `installer\README.md`
+
+The source manifest keeps `CodePath: src/app.js` for in-repo Node.js development and
+testing; the packaged release replaces it with the Node launcher plus frozen Python
+runtime, and that packaged form is what ships to users. The Node implementation remains
+the behavioral reference for parity, and its suite keeps running in CI alongside the
+Python suites.
+
+Install the plugin's locked Node.js development dependencies once:
+
+```powershell
+cd com.arkamax404.mediacontrold200.ulanziPlugin
+npm ci
+```
+
+The pinned Ulanzi SDK files are already vendored under `vendor\ulanzi-sdk`.
+`setup-sdk.ps1` is a maintainer recovery/refresh command, not a normal install step; it
+re-downloads the four Node runtime files and five Property Inspector scripts from the
+official Ulanzi SDK pins, verifying every SHA-256 checksum and preserving provenance.
 
 ## Other Possible Actions
 
-Core Audio could also support explicit volume presets or per-session diagnostics,
-but those actions are not implemented. GSMTC media controls remain deliberately
-separate from Core Audio volume control.
+Core Audio could also support explicit volume presets or per-session diagnostics, but
+those actions are not implemented. GSMTC media controls remain deliberately separate
+from Core Audio volume control.
 
 ## Local Verification
 
@@ -275,8 +276,8 @@ cd com.arkamax404.mediacontrold200.ulanziPlugin
 npm test
 ```
 
-These suites use mocks and local ephemeral test servers; they do not start the
-bridge, operate Ulanzi Studio, connect to a D200, or change real media or audio state.
+These suites use mocks and local ephemeral test servers; they do not start the bridge,
+operate Ulanzi Studio, connect to a D200, or change real media or audio state.
 
 The [Windows CI workflow](.github/workflows/ci.yml) runs the same complete suites at
 the minimum supported Python and Node.js versions.
@@ -291,8 +292,8 @@ before preparing a report; a verified private contact remains a publication bloc
 
 ## License
 
-Project-owned material is distributed under the MIT License; see `LICENSE`.
-The project-specific SVG files under the plugin's `assets/` directory have no
-recorded external source or attribution and are distributed as project material.
-Third-party components retain their own license terms and are documented in
+Project-owned material is distributed under the MIT License; see `LICENSE`. The
+project-specific SVG files under the plugin's `assets/` directory have no recorded
+external source or attribution and are distributed as project material. Third-party
+components retain their own license terms and are documented in
 `THIRD_PARTY_NOTICES.md`.

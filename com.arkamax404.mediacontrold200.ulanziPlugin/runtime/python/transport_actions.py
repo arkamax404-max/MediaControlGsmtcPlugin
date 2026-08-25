@@ -146,7 +146,7 @@ class TransportRouter:
                     )
                 except Exception:
                     self.last_result = BridgeResult(str(command), "unavailable")
-                if command == "toggle" and self.last_result.ok:
+                if self.last_result.ok:
                     try:
                         if self._poll_notifier is not None:
                             self._poll_notifier()

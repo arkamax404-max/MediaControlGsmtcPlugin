@@ -9,7 +9,8 @@ PLUGIN_FOLDER = "com.arkamax404.mediacontrold200.ulanziPlugin"
 PACKAGE_NAME = "media-control-for-d200"
 PORTED_ACTION_SUFFIXES = (
     "nowplaying", "previous", "toggle", "next", "volume-up", "volume-down",
-    "mute-toggle", "progress",
+    "mute-toggle", "progress", "artwork-top-left", "artwork-top-right",
+    "artwork-bottom-left", "artwork-bottom-right",
 )
 RUNTIME_ASSET_FILES = ("assets/music.svg", "assets/offline.svg")
 PROPERTY_INSPECTOR_FILES = (
@@ -102,12 +103,17 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
     }
     manifest["CodePath"] = "src/launcher.js"
     ported_uuids = {f"{manifest['UUID']}.{suffix}" for suffix in PORTED_ACTION_SUFFIXES}
-    manifest["Actions"] = [
-        action for action in manifest.get("Actions", []) if action.get("UUID") in ported_uuids
-    ]
+    ported_order = {f"{manifest['UUID']}.{suffix}": index
+                    for index, suffix in enumerate(PORTED_ACTION_SUFFIXES)}
+    manifest["Actions"] = sorted(
+        (action for action in manifest.get("Actions", [])
+         if action.get("UUID") in ported_uuids),
+        key=lambda action: ported_order[action.get("UUID")],
+    )
     if len(manifest["Actions"]) != len(PORTED_ACTION_SUFFIXES):
         raise ValueError("External projection must contain exactly the approved actions")
-    progress = manifest["Actions"][-1]
+    progress = next(action for action in manifest["Actions"]
+                    if action.get("UUID") == f"{manifest['UUID']}.progress")
     if progress.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[0]:
         raise ValueError("Progress property inspector path is missing")
     asset_references = {

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
 from datetime import datetime, timezone
+from decimal import Decimal
+from html import escape
 from math import isfinite, isnan
 from typing import Callable
 
@@ -12,10 +14,38 @@ from artwork_bundle import ARTWORK_ID_PATTERN, ArtworkBundle
 
 
 ACTION_UUID = "com.arkamax404.ulanzi.mediacontrol.nowplaying"
+MUTE_TOGGLE_UUID = "com.arkamax404.ulanzi.mediacontrol.mute-toggle"
+MOSAIC_ACTIONS = {
+    "com.arkamax404.ulanzi.mediacontrol.artwork-top-left":
+        (0, "./assets/artwork-top-left.svg", "Artwork Top Left"),
+    "com.arkamax404.ulanzi.mediacontrol.artwork-top-right":
+        (1, "./assets/artwork-top-right.svg", "Artwork Top Right"),
+    "com.arkamax404.ulanzi.mediacontrol.artwork-bottom-left":
+        (2, "./assets/artwork-bottom-left.svg", "Artwork Bottom Left"),
+    "com.arkamax404.ulanzi.mediacontrol.artwork-bottom-right":
+        (3, "./assets/artwork-bottom-right.svg", "Artwork Bottom Right"),
+}
+AUDIO_ACTIONS = {
+    "com.arkamax404.ulanzi.mediacontrol.volume-up": "./assets/volume-up.svg",
+    "com.arkamax404.ulanzi.mediacontrol.volume-down": "./assets/volume-down.svg",
+    MUTE_TOGGLE_UUID: "./assets/mute.svg",
+}
+TOGGLE_UUID = "com.arkamax404.ulanzi.mediacontrol.toggle"
+PREVIOUS_UUID = "com.arkamax404.ulanzi.mediacontrol.previous"
+NEXT_UUID = "com.arkamax404.ulanzi.mediacontrol.next"
+TRANSPORT_DISPLAY = {
+    TOGGLE_UUID: "./assets/play.svg",
+    PREVIOUS_UUID: "./assets/previous.svg",
+    NEXT_UUID: "./assets/next.svg",
+}
+DISPLAY_ACTION_UUIDS = frozenset((ACTION_UUID, *MOSAIC_ACTIONS, *AUDIO_ACTIONS,
+                                  *TRANSPORT_DISPLAY))
 STATE_MAX_AGE_SECONDS = 15
 TEXT_LIMIT = 48
 OFFLINE_ICON = "./assets/offline.svg"
 MUSIC_ICON = "./assets/music.svg"
+PLAY_ICON = "./assets/play.svg"
+PAUSE_ICON = "./assets/pause.svg"
 JS_TRIM_CHARACTERS = frozenset(
     "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
     "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
@@ -38,6 +68,10 @@ class MediaSnapshot:
     artist: str
     artwork_id: str | None
     status: str
+    audio_available: bool = False
+    volume_percent: int | None = None
+    is_muted: bool = False
+    audio_mixed: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +103,7 @@ class ContextView:
 @dataclass
 class _Context:
     generation: int
+    action: str
     version: int = 1
     active: bool = True
     committed_signature: tuple[str, str, str] | None = None
@@ -76,7 +111,8 @@ class _Context:
 
 def unavailable_media_snapshot(reason: str = "unavailable") -> MediaSnapshot:
     status = reason if reason in ("configuration", "incompatible") else "offline"
-    return MediaSnapshot(False, False, False, "", "", None, status)
+    return MediaSnapshot(False, False, False, "", "", None, status,
+                         False, None, False, False)
 
 
 def normalize_media_snapshot(
@@ -98,16 +134,48 @@ def normalize_media_snapshot(
         title = _text(payload.get("title"))
         artist = _text(payload.get("artist"))
         candidate = payload.get("artwork_id")
+        audio_available = payload.get("audio_available") is True
+        volume_candidate = payload.get("volume_percent")
+        is_muted = payload.get("is_muted") is True
+        audio_mixed = payload.get("audio_mixed") is True
     except Exception:
         return unavailable_media_snapshot()
     artwork_id = candidate if isinstance(candidate, str) and ARTWORK_ID_PATTERN.fullmatch(candidate) else None
     return MediaSnapshot(True, available, is_playing,
-                         title, artist, artwork_id, "ready" if available else "no_session")
+                         title, artist, artwork_id, "ready" if available else "no_session",
+                         audio_available, _volume_percent(volume_candidate),
+                         is_muted, audio_mixed)
 
 
 def now_playing_text(snapshot: MediaSnapshot) -> str:
     values = tuple(value for value in (_text(snapshot.title), _text(snapshot.artist)) if value)
     return "\n".join(values) or "Playing"
+
+
+def _audio_state_label(snapshot: MediaSnapshot) -> str:
+    if not snapshot.audio_available:
+        return "No audio"
+    return ("Mixed" if snapshot.audio_mixed else "Muted" if snapshot.is_muted
+            else f"{snapshot.volume_percent}%"
+            if snapshot.volume_percent is not None else "null%")
+
+
+def render_mute_toggle_svg(label: str, waves: bool) -> str:
+    glyph = ('<path fill="none" stroke="#1db954" stroke-width="7" stroke-linecap="round" '
+             'd="M61 37a19 19 0 0 1 0 26M72 27a33 33 0 0 1 0 46"/>' if waves else
+             '<path fill="none" stroke="#1db954" stroke-width="8" stroke-linecap="round" '
+             'd="m64 39 22 22m0-22L64 61"/>')
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">'
+            '<rect width="196" height="196" rx="35.28" fill="#121212"/>'
+            f'<text x="98" y="44" fill="#ffffff" font-family="Arial, sans-serif" font-size="38" '
+            f'font-weight="700" text-anchor="middle">{escape(label, quote=True)}</text>'
+            '<g transform="translate(-5 28) scale(2)">'
+            f'<path fill="#1db954" d="M17 42h15l19-16v48L32 58H17z"/>{glyph}</g></svg>')
+
+
+def mute_toggle_data_uri(label: str, waves: bool) -> str:
+    svg = render_mute_toggle_svg(label, waves)
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
 
 
 class NowPlayingActionModel:
@@ -128,13 +196,13 @@ class NowPlayingActionModel:
 
     def add(self, event: object) -> tuple[RenderRequest, ...]:
         action, context = _event_identity(event)
-        if action != ACTION_UUID or not context:
+        if action not in DISPLAY_ACTION_UUIDS or not context:
             return ()
         with self._lock:
             if self._shutdown:
                 return ()
             self._next_generation += 1
-            entry = _Context(self._next_generation)
+            entry = _Context(self._next_generation, action)
             self._contexts[context] = entry
             return (self._request(context, entry),)
 
@@ -185,11 +253,47 @@ class NowPlayingActionModel:
         request = _canonical_request(request)
         if request is None:
             return None
+        with self._lock:
+            entry = self._matching(request)
+            action = entry.action if entry and entry.active else None
+        if action is None:
+            return None
         online, available = snapshot.online, snapshot.available
         playing, artwork_id = snapshot.is_playing, snapshot.artwork_id
         status, text = snapshot.status, _payload_text(now_playing_text(snapshot))
         matching = isinstance(bundle, ArtworkBundle) and bundle.artwork_id == artwork_id
-        if not online or not available:
+        mosaic = MOSAIC_ACTIONS.get(action)
+        audio = AUDIO_ACTIONS.get(action)
+        transport = TRANSPORT_DISPLAY.get(action)
+        if not online and (mosaic is not None or audio is not None
+                           or transport is not None):
+            method, image = "setPathIcon", OFFLINE_ICON
+            text = STATUS_LABELS.get(status, "Offline")
+        elif mosaic is not None:
+            tile, fallback, text = mosaic
+            if available and matching:
+                method, image, text = "setBaseDataIcon", bundle.tiles[tile], ""
+            else:
+                method, image = "setPathIcon", fallback
+        elif audio is not None:
+            if action == MUTE_TOGGLE_UUID:
+                method = "setBaseDataIcon"
+                image = mute_toggle_data_uri(_audio_state_label(snapshot),
+                                             snapshot.audio_available and snapshot.is_muted)
+                text = ""
+            else:
+                method, image = "setPathIcon", audio
+                text = _audio_state_label(snapshot)
+        elif transport is not None:
+            method = "setPathIcon"
+            if not available:
+                image, text = OFFLINE_ICON, "Offline"
+            elif action == TOGGLE_UUID:
+                image, text = (PAUSE_ICON, "Pause") if playing else (PLAY_ICON, "Play")
+            else:
+                image = transport
+                text = "Previous" if action == PREVIOUS_UUID else "Next"
+        elif not online or not available:
             method, image = "setPathIcon", OFFLINE_ICON
             text = STATUS_LABELS.get(status, "Offline")
         elif matching:
@@ -333,6 +437,11 @@ def _integer(value: object) -> int | None:
         return int.__int__(value)
     except Exception:
         return None
+
+
+def _volume_percent(value: object) -> int | None:
+    volume = _integer(value)
+    return None if volume is None else max(0, min(100, volume))
 
 
 def _js_truthy(value: object) -> bool:
