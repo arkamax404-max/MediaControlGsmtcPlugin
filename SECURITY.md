@@ -14,6 +14,6 @@ Do not include private machine data or sensitive logs and screenshots in a repor
 
 ## Security Issue or Ordinary Bug
 
-Report privately when the behavior could expose private data, bypass the loopback-only boundary, execute unintended commands, or affect systems beyond the user's intended SpotifyPip operation.
+Report privately when the behavior could expose private data, bypass the loopback-only boundary, execute unintended commands, or affect systems beyond the user's intended Media Control for D200 operation.
 
 Crashes, display errors, setup problems, and incorrect behavior without a confidentiality, integrity, or boundary impact are ordinary bugs. Report them through the [public issue tracker](https://github.com/arkamax404-max/gsmtc-d200-controller/issues) using a minimal reproduction that contains no secrets.

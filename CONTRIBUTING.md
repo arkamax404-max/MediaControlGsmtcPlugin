@@ -1,4 +1,4 @@
-# Contributing to SpotifyPip
+# Contributing to Media Control for D200
 
 Read the [README](README.md) first for the project overview, supported tools, and runtime setup. Routine contribution checks are Windows-oriented and use mocks and local ephemeral servers instead of Ulanzi Studio, a D200, or real media playback.
 
@@ -8,7 +8,7 @@ Use Windows 10/11 with Python 3.11 or newer and Node.js 20.12.2 or newer. From t
 
 ```powershell
 python -m pip install -r requirements.txt
-Push-Location plugin\com.ulanzi.spotifygsm.ulanziPlugin
+Push-Location com.arkamax404.mediacontrold200.ulanziPlugin
 npm ci
 Pop-Location
 ```
@@ -26,7 +26,7 @@ python -m unittest discover -s tests -v
 Run the complete Node.js suite from the plugin directory:
 
 ```powershell
-Push-Location plugin\com.ulanzi.spotifygsm.ulanziPlugin
+Push-Location com.arkamax404.mediacontrold200.ulanziPlugin
 npm test
 Pop-Location
 ```
@@ -36,7 +36,7 @@ These tests use mocks and local ephemeral servers. Do not start the bridge, oper
 ## Architecture Boundaries
 
 - `d200_bridge/` is the loopback-only GSMTC and Spotify Core Audio bridge.
-- `plugin/com.ulanzi.spotifygsm.ulanziPlugin/` communicates with Ulanzi Studio and the fixed local bridge only.
+- `com.arkamax404.mediacontrold200.ulanziPlugin/` communicates with Ulanzi Studio and the fixed local bridge only.
 - Media control, timeline state, and Spotify application audio are separate concerns. Do not add master-volume or unrelated application control as a fallback.
 
 ## Sensitive Data

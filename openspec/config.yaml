@@ -14,7 +14,7 @@ testing:
   detected: 2026-08-23
   commands:
     python_unit: "python -m unittest discover -s tests -v"
-    node_unit: "Push-Location plugin\\com.ulanzi.spotifygsm.ulanziPlugin; npm test; Pop-Location"
+    node_unit: "Push-Location com.arkamax404.mediacontrold200.ulanziPlugin; npm test; Pop-Location"
   notes:
     - "Commands are capability records only; initialization did not execute runtime-affecting tests."
     - "Tests use mocks and local ephemeral servers and must not start the bridge, Studio, D200, playback, or real audio."

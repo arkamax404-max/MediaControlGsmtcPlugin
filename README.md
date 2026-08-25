@@ -1,6 +1,6 @@
-# SpotifyPip
+# Media Control for D200
 
-SpotifyPip is a local Windows integration that connects Spotify Desktop to an
+Media Control for D200 is a local Windows integration that connects Spotify Desktop to an
 Ulanzi D200 through Windows GSMTC, Core Audio, a loopback Python bridge, and an
 Ulanzi Studio plugin. It requires no cloud service or account configuration.
 
@@ -29,11 +29,11 @@ Windows. Pillow processes GSMTC artwork locally in memory.
    python -m pip install -r requirements.txt
    ```
 
-   `requirements.txt` is the canonical Python dependency input. The Windows
-   bridge dependencies are pinned. There is no Python lock file because
-   producing a trustworthy lock requires dependency resolution for the intended
-   Python and Windows target; this project does not treat a lock generated from
-   one developer machine as reproducible.
+   `requirements.txt` remains the canonical dependency input for the production
+   bridge. Its Windows dependencies are pinned, but the bridge does not use a
+   resolved lock file. The experimental Ulanzi runtime spike separately uses the
+   hash-locked `packaging/requirements-ulanzi-bootstrap.lock` and
+   `packaging/requirements-ulanzi-runtime.lock` build inputs.
 
 3. Start the loopback GSMTC bridge and leave it running:
 
@@ -66,7 +66,7 @@ Windows. Pillow processes GSMTC artwork locally in memory.
 4. Install the plugin's locked Node.js dependencies once:
 
    ```powershell
-   cd plugin\com.ulanzi.spotifygsm.ulanziPlugin
+   cd com.arkamax404.mediacontrold200.ulanziPlugin
    npm ci
    ```
 
@@ -89,19 +89,34 @@ Windows. Pillow processes GSMTC artwork locally in memory.
    project-owned plugin files. See `THIRD_PARTY_NOTICES.md` for the locally
    verifiable license boundary.
 
-5. In Ulanzi Studio, use its plugin import/install interface and select the complete
-   `plugin\com.ulanzi.spotifygsm.ulanziPlugin` folder. Restart Studio if the plugin
+   The source manifest deliberately keeps `CodePath: src/app.js`; this is the
+   functional Node runtime that implements all current actions. The separate
+   JavaScript launcher and Python harness are an experimental lifecycle spike and
+   do not replace this entrypoint until the action handlers are migrated.
+
+5. Use Ulanzi Studio's plugin import/install interface and select the complete
+   `com.arkamax404.mediacontrold200.ulanziPlugin` folder. Restart Studio if the plugin
    list does not refresh. Official SDK documentation describes installation into a
    designated plugin folder but does not publish a stable Windows filesystem path,
    so this project intentionally does not invent one.
 
-6. Assign the desired actions from the `Spotify GSMTC` category to D200 keys.
+6. Assign the desired actions from the `Media Control for D200` category to D200 keys.
    The existing `Now Playing`, `Track Progress`, transport, and volume actions
    remain available alongside the four artwork mosaic actions.
 
 7. Select the `Track Progress` key in Studio to configure its colors and stroke
    width. Each key instance keeps its own settings. Native color inputs and
    visible HEX fields are both available.
+
+For experimental Python transport testing, follow `Isolated Ulanzi Runtime Spike`
+in `packaging\README.md`. That procedure creates a disposable plugin package
+outside the repository, changes only the copied manifest to `src/launcher.js`,
+and exposes exactly eight ported actions: Now Playing, Previous, Play/Pause, Next,
+Volume Up, Volume Down, Mute Toggle, and Track Progress. Its explicit music and
+offline fallbacks and the progress inspector are included. The four artwork mosaic
+actions and their assets remain deferred, while the validated color and grayscale
+bundle foundation remains available for Now Playing's Play/Pause rendering. The
+Python Mute Toggle action does not yet update its icon or state dynamically.
 
 The now-playing key displays the GSMTC thumbnail with title and artist. It uses
 the bridge's color PNG while playing and its matching grayscale PNG while paused;
@@ -256,7 +271,7 @@ python -m unittest discover -s tests -v
 Run the Node.js suite from the plugin directory after `npm ci`:
 
 ```powershell
-cd plugin\com.ulanzi.spotifygsm.ulanziPlugin
+cd com.arkamax404.mediacontrold200.ulanziPlugin
 npm test
 ```
 

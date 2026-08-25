@@ -60,7 +60,7 @@ function startInspector(sdk, documentRef) {
   sdk.onDidReceiveSettings?.((event) => apply(event?.settings));
   form.addEventListener("change", (event) => send(event.target));
   apply(INSPECTOR_DEFAULTS);
-  sdk.connect("com.ulanzi.ulanzistudio.spotifygsm.progress");
+  sdk.connect("com.arkamax404.ulanzi.mediacontrol.progress");
 }
 
 if (typeof document !== "undefined" && typeof $UD !== "undefined") {

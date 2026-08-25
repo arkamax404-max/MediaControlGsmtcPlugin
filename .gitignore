@@ -35,6 +35,9 @@ coverage/
 .cache/
 tmp/
 temp/
+com.arkamax404.mediacontrold200.ulanziPlugin/runtime/*
+!com.arkamax404.mediacontrold200.ulanziPlugin/runtime/python/
+!com.arkamax404.mediacontrold200.ulanziPlugin/runtime/python/*.py
 
 # Editors and operating systems
 .idea/

@@ -1,7 +1,7 @@
 import UlanziApi from "../vendor/ulanzi-sdk/libs/ulanziApi.js";
 import { SpotifyGSMTCPlugin } from "./plugin.js";
 
-const PLUGIN_UUID = "com.ulanzi.ulanzistudio.spotifygsm";
+const PLUGIN_UUID = "com.arkamax404.ulanzi.mediacontrol";
 const sdk = new UlanziApi();
 const plugin = new SpotifyGSMTCPlugin({ sdk });
 

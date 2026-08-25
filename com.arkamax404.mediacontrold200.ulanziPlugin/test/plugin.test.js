@@ -248,19 +248,19 @@ test("fresh command health suppresses every unavailable or incompatible case", a
   }
 });
 
-test("maps all twelve declared action UUIDs without changing existing UUIDs", () => {
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.nowplaying" }), "nowplaying");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.previous" }), "previous");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.toggle" }), "toggle");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.next" }), "next");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume-up" }), "volume-up");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume-down" }), "volume-down");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.mute-toggle" }), "mute-toggle");
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.progress" }), "progress");
+test("maps all twelve declared action suffixes in the approved namespace", () => {
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.nowplaying" }), "nowplaying");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.previous" }), "previous");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.toggle" }), "toggle");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.next" }), "next");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.volume-up" }), "volume-up");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.volume-down" }), "volume-down");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.mute-toggle" }), "mute-toggle");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.progress" }), "progress");
   for (const action of MOSAIC_ACTIONS) {
-    assert.equal(actionFromEvent({ uuid: `com.ulanzi.ulanzistudio.spotifygsm.${action}` }), action);
+    assert.equal(actionFromEvent({ uuid: `com.arkamax404.ulanzi.mediacontrol.${action}` }), action);
   }
-  assert.equal(actionFromEvent({ uuid: "com.ulanzi.ulanzistudio.spotifygsm.volume" }), null);
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.volume" }), null);
 });
 
 test("normalizes media and audio availability independently", () => {
@@ -528,7 +528,7 @@ test("initializes and recreates progress contexts in remaining mode", async () =
     clearIntervalImpl() {},
   });
   const event = {
-    uuid: "com.ulanzi.ulanzistudio.spotifygsm.progress",
+    uuid: "com.arkamax404.ulanzi.mediacontrol.progress",
     context: "progress",
     param: DEFAULT_PROGRESS_SETTINGS,
   };
@@ -656,7 +656,7 @@ test("normalizes and persists progress settings once with immediate render", asy
   });
   plugin.connect();
   sdk.handlers.add({
-    uuid: "com.ulanzi.ulanzistudio.spotifygsm.progress",
+    uuid: "com.arkamax404.ulanzi.mediacontrol.progress",
     context: "progress",
     param: { progressColor: "javascript:bad", strokeWidth: 99 },
   });
@@ -843,7 +843,7 @@ test("mosaic presses are inert and pause does not alter or rerender color tiles"
   for (const [index, action] of MOSAIC_ACTIONS.entries()) {
     assert.equal(await plugin.run({
       context: `tile-${index}`,
-      uuid: `com.ulanzi.ulanzistudio.spotifygsm.${action}`,
+      uuid: `com.arkamax404.ulanzi.mediacontrol.${action}`,
     }), false);
     plugin.render(`tile-${index}`, action, { ...playing, revision: 2, isPlaying: false });
   }
@@ -1154,12 +1154,21 @@ test("custom SVG icons declare SDK-sized intrinsic dimensions", () => {
   }
 });
 
-test("manifest declares secure unique mosaic actions and keeps CodePath unchanged", () => {
+test("manifest declares approved identity, functional entrypoint, and unique action UUIDs", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+  assert.equal(manifest.Author, "arkamax404-max");
+  assert.equal(manifest.Name, "Media Control for D200");
+  assert.equal(manifest.Category, "Media Control for D200");
+  assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
   assert.equal(manifest.Version, "1.2.0");
   const uuids = [manifest.UUID, ...manifest.Actions.map(({ UUID }) => UUID)];
   assert.equal(new Set(uuids).size, uuids.length);
+  assert.deepEqual(manifest.Actions.map(({ UUID }) => UUID), [
+    "nowplaying", "artwork-top-left", "artwork-top-right", "artwork-bottom-left",
+    "artwork-bottom-right", "previous", "toggle", "next", "volume-up", "volume-down",
+    "mute-toggle", "progress",
+  ].map((suffix) => `${manifest.UUID}.${suffix}`));
   readFileSync(new URL(`../${manifest.CodePath}`, import.meta.url));
   const assetPaths = new Set([
     manifest.Icon,
@@ -1172,7 +1181,7 @@ test("manifest declares secure unique mosaic actions and keeps CodePath unchange
   for (const assetPath of assetPaths) readFileSync(new URL(`../${assetPath}`, import.meta.url));
 
   const mosaic = manifest.Actions.filter(({ UUID }) => MOSAIC_ACTIONS.some(
-    (action) => UUID === `com.ulanzi.ulanzistudio.spotifygsm.${action}`,
+    (action) => UUID === `com.arkamax404.ulanzi.mediacontrol.${action}`,
   ));
   assert.deepEqual(mosaic.map(({ Name }) => Name), [
     "Artwork Top Left", "Artwork Top Right", "Artwork Bottom Left", "Artwork Bottom Right",
