@@ -1,4 +1,4 @@
-#define AppVersion "1.2.0"
+#define AppVersion "1.2.1"
 #define AppName "GSMTC D200 Companion"
 #ifndef BundleRoot
   #error BundleRoot is required
@@ -21,7 +21,7 @@ PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupArchitecture=x64
-OutputBaseFilename=GSMTCD200Companion-1.2.0-local-unsigned
+OutputBaseFilename=GSMTCD200Companion-1.2.1-local-unsigned
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -36,9 +36,9 @@ SignedUninstaller=no
 Source: "manage_companion.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Start Companion"; Filename: "{app}\versions\1.2.0\bridge\GSMTCD200Companion.exe"; WorkingDir: "{app}\versions\1.2.0\bridge"
-Name: "{group}\Create Diagnostics Bundle"; Filename: "{app}\versions\1.2.0\bridge\GSMTCD200Companion.exe"; Parameters: "--diagnose"; WorkingDir: "{app}\versions\1.2.0\bridge"
-Name: "{group}\Stop Companion"; Filename: "{app}\versions\1.2.0\bridge\GSMTCD200Companion.exe"; Parameters: "--stop"; WorkingDir: "{app}\versions\1.2.0\bridge"
+Name: "{group}\Start Companion"; Filename: "{app}\versions\1.2.1\bridge\GSMTCD200Companion.exe"; WorkingDir: "{app}\versions\1.2.1\bridge"
+Name: "{group}\Create Diagnostics Bundle"; Filename: "{app}\versions\1.2.1\bridge\GSMTCD200Companion.exe"; Parameters: "--diagnose"; WorkingDir: "{app}\versions\1.2.1\bridge"
+Name: "{group}\Stop Companion"; Filename: "{app}\versions\1.2.1\bridge\GSMTCD200Companion.exe"; Parameters: "--stop"; WorkingDir: "{app}\versions\1.2.1\bridge"
 Name: "{group}\Uninstall Companion"; Filename: "{uninstallexe}"
 
 [UninstallDelete]
@@ -82,7 +82,7 @@ var ResultCode: Integer; Params, Phase, StatusPath: String;
 begin
   if CurStep = ssPostInstall then begin
     StatusPath := ExpandConstant('{app}\installer\activation-status.txt'); DeleteFile(StatusPath);
-    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\installer\manage_companion.ps1') + '" -Action Install -VersionRoot "' + ExpandConstant('{app}\versions\1.2.0\bridge') + '" -DataRoot "' + ExpandConstant('{localappdata}\GSMTCD200Controller') + '" -StatusPath "' + StatusPath + '"';
+    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\installer\manage_companion.ps1') + '" -Action Install -VersionRoot "' + ExpandConstant('{app}\versions\1.2.1\bridge') + '" -DataRoot "' + ExpandConstant('{localappdata}\GSMTCD200Controller') + '" -StatusPath "' + StatusPath + '"';
     ResultCode := -1;
     if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then begin
       Phase := ReadHelperPhase(StatusPath); Log(Format('Companion helper failed: phase=%s exit=%d', [Phase, ResultCode]));
@@ -98,7 +98,7 @@ var ResultCode: Integer; Params, Phase, StatusPath: String;
 begin
   if CurUninstallStep = usUninstall then begin
     StatusPath := ExpandConstant('{app}\installer\activation-status.txt'); DeleteFile(StatusPath);
-    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\installer\manage_companion.ps1') + '" -Action UninstallTask -VersionRoot "' + ExpandConstant('{app}\versions\1.2.0\bridge') + '" -DataRoot "' + ExpandConstant('{localappdata}\GSMTCD200Controller') + '" -StatusPath "' + StatusPath + '"'; ResultCode := -1;
+    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\installer\manage_companion.ps1') + '" -Action UninstallTask -VersionRoot "' + ExpandConstant('{app}\versions\1.2.1\bridge') + '" -DataRoot "' + ExpandConstant('{localappdata}\GSMTCD200Controller') + '" -StatusPath "' + StatusPath + '"'; ResultCode := -1;
     if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then begin
       Phase := ReadHelperPhase(StatusPath); Log(Format('Companion uninstall helper failed: phase=%s exit=%d', [Phase, ResultCode]));
       RaiseException('Companion uninstall preparation failed');

@@ -1,8 +1,8 @@
 import argparse, hashlib, json, re, shutil, stat, subprocess
 from pathlib import Path, PurePosixPath
 
-TREE_HASH = "b283d01b94d737845ccbcd4c9f0b2b6a3b7e197071d3318eefbbf0be3d60f42c"
-EXE_HASH = "9248e1b93079f3717482a711f0ab883404d2eaafad990a3e32b667aabfbe67f7"
+TREE_HASH = "1f42f3a388a2bd652e942fa886800caf30af1cd7a34f735286a1a8c239c59af3"
+EXE_HASH = "d838eee3a3380b31077821b9ba58fc22cb4935a48079a3f2473582156f1b1f72"
 LOCAL = re.compile(r'^[A-Z]:\\[^\x00-\x1f\\/:*?"<>|]+(?:\\[^\x00-\x1f\\/:*?"<>|]+)*$')
 
 def sha256(path): return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -40,7 +40,7 @@ def generate_include(files):
         path = PurePosixPath(value)
         if path.is_absolute() or ".." in path.parts or any(part.lower() in {"tests", "plugin", "node_modules", "openspec", ".atl"} for part in path.parts): raise ValueError("unsafe bundle path")
         source = str(path).replace("/", "\\"); parent = str(path.parent).replace("/", "\\")
-        destination = "{app}\\versions\\1.2.0\\bridge" + ("" if parent == "." else "\\" + parent)
+        destination = "{app}\\versions\\1.2.1\\bridge" + ("" if parent == "." else "\\" + parent)
         lines.append(f'Source: "{{#BundleRoot}}\\{source}"; DestDir: "{destination}"; Flags: ignoreversion')
     return "\n".join(lines) + "\n"
 def enumerate_bundle(root):
@@ -77,7 +77,7 @@ def build_receipt(companion_commit, snapshot, inno, installer_hash, installer_si
     source_executable = next(item for item in source_bundle["files"] if item["path"] == "GSMTCD200Companion.exe")
     executable = next(item for item in compiled_bundle["files"] if item["path"] == "GSMTCD200Companion.exe")
     return {"schema_version": 3, "companion_source_commit": companion_commit,
-        "installer_source_snapshot_sha256": snapshot["sha256"], "installer_source_files": snapshot["files"], "app_version": "1.2.0",
+        "installer_source_snapshot_sha256": snapshot["sha256"], "installer_source_files": snapshot["files"], "app_version": "1.2.1",
         "inno_version": inno, "source_bundle_tree_sha256": source_bundle["tree_sha256"],
         "source_bundle_exe_sha256": source_executable["sha256"], "snapshot_bundle_tree_sha256": compiled_bundle["tree_sha256"], "snapshot_bundle_exe_sha256": executable["sha256"],
         "source_bundle_file_count": source_bundle["file_count"], "source_bundle_total_size": source_bundle["total_size"],

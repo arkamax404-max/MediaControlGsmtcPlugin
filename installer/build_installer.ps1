@@ -36,7 +36,7 @@ $include = Join-Path $MetadataRoot 'bundle-files.iss'
 $snapshotRoot = Join-Path $MetadataRoot 'bundle-snapshot'
 & $ISCC --no-ide-signtools --no-signing --output-dir=$OutputRoot --define=BundleRoot=$snapshotRoot --define=BundleFilesInclude=$include $script
 if ($LASTEXITCODE -ne 0) { throw 'Inno compilation failed' }
-$installer = Join-Path $OutputRoot 'GSMTCD200Companion-1.2.0-local-unsigned.exe'
+$installer = Join-Path $OutputRoot 'GSMTCD200Companion-1.2.1-local-unsigned.exe'
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'Installer output missing' }
 if ((Get-AuthenticodeSignature -LiteralPath $installer).Status -ne 'NotSigned') { throw 'Unexpected installer signature' }
 & $VerifierPython -I -s $support receipt --companion-commit $CompanionSourceCommit --source-snapshot (Join-Path $MetadataRoot 'installer-source-snapshot.json') --source-root $PSScriptRoot --include $include --inno-version $innoVersion --installer $installer --bundle-manifest (Join-Path $MetadataRoot 'bundle-manifest.json') --snapshot-manifest (Join-Path $MetadataRoot 'bundle-snapshot-manifest.json') --snapshot-root $snapshotRoot --output (Join-Path $OutputRoot 'installer-build-receipt.json')

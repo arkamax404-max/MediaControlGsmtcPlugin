@@ -38,13 +38,16 @@ The companion bridge **must be installed and running before the plugin can displ
 anything**. Every key shows `Offline` or `Companion setup required` until the bridge
 answers on `http://127.0.0.1:43821/health`.
 
-Option A — companion installer (recommended): build the per-user installer with
-`installer\build_installer.ps1` as described in `installer\README.md`. It installs the
-bridge under `%LOCALAPPDATA%\Programs\GSMTCD200Controller`, registers an interactive
+Option A — prebuilt installer (recommended): download
+`GSMTCD200Companion-<version>-local-unsigned.exe` from the latest
+[GitHub release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases)
+and run it. It installs the bridge under
+`%LOCALAPPDATA%\Programs\GSMTCD200Controller`, registers an interactive
 per-user scheduled task that starts the bridge silently at every logon, applies token
 ACL hardening, and keeps the token, logs, and diagnostics under
 `%LOCALAPPDATA%\GSMTCD200Controller`. The bridge runs in the background without any
-window on the desktop.
+window on the desktop. Advanced users can build the same installer from source with
+`installer\build_installer.ps1` as described in `installer\README.md`.
 
 Option B — manual: from the project root,
 
@@ -186,7 +189,7 @@ transitions may temporarily expose no duration; the key then shows `No timeline`
 
 | Symptom | Check |
 |---|---|
-| Keys show `Offline` | The companion bridge is not running. Start it: with the installer, run the `GSMTCD200Controller-Companion` scheduled task (it also starts automatically at logon); manually, run `python -m d200_bridge`. Verify `http://127.0.0.1:43821/health`. Keep both apps on the same machine. |
+| Keys show `Offline` | The companion bridge is not running. If it is not installed yet, run the prebuilt installer from the [latest release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases). With the installer, run the `GSMTCD200Controller-Companion` scheduled task (it also starts automatically at logon); manually, run `python -m d200_bridge`. Verify `http://127.0.0.1:43821/health`. Keep both apps on the same machine. |
 | Keys show `Offline` right after a reboot | Wait about ten seconds after logon — the scheduled task starts the bridge with a short delay. If it still does not come up, start the task manually and check the logs under `%LOCALAPPDATA%\GSMTCD200Controller\logs`. |
 | Keys show `Companion setup required` | The plugin could not read the bridge token; confirm the companion was set up for the same Windows user. |
 | Music icon instead of cover | The active GSMTC session did not provide a thumbnail; controls and text still work. |
