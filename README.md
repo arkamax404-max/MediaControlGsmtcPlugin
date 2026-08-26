@@ -5,13 +5,19 @@ Ulanzi D200 through Windows GSMTC, Core Audio, a loopback Python bridge, and an 
 Studio plugin. It requires no cloud service or account configuration: every component runs
 on the same machine and communicates over loopback only.
 
+> **Important — the plugin does not work without the companion bridge.** The bridge is a
+> separate component that must be installed and running on the same Windows machine
+> before the plugin can show media state. Without it, every key renders its `Offline`
+> or `Companion setup required` fallback. See [Companion setup](#companion-setup) below.
+
 ## Requirements
 
 - Windows 10/11
 - Spotify Desktop
 - Ulanzi Studio 2.1.4 or newer with a D200 device
-- The local companion bridge, installed either through the companion installer
-  (see `installer\README.md`) or manually with Python 3.11 or newer
+- **The companion bridge, installed and running** — either through the companion
+  installer (recommended, see `installer\README.md`) or manually with Python 3.11 or
+  newer. This is mandatory: the plugin has no media data source without it.
 
 The plugin package itself is self-contained: it runs on Ulanzi Studio's embedded Node.js
 and a frozen Python runtime, so plugin users do not install Python, Node.js, or npm.
@@ -28,11 +34,17 @@ Two pieces cooperate:
 
 ### Companion setup
 
+The companion bridge **must be installed and running before the plugin can display
+anything**. Every key shows `Offline` or `Companion setup required` until the bridge
+answers on `http://127.0.0.1:43821/health`.
+
 Option A — companion installer (recommended): build the per-user installer with
 `installer\build_installer.ps1` as described in `installer\README.md`. It installs the
 bridge under `%LOCALAPPDATA%\Programs\GSMTCD200Controller`, registers an interactive
-per-user scheduled task, applies token ACL hardening, and keeps the token, logs, and
-diagnostics under `%LOCALAPPDATA%\GSMTCD200Controller`.
+per-user scheduled task that starts the bridge silently at every logon, applies token
+ACL hardening, and keeps the token, logs, and diagnostics under
+`%LOCALAPPDATA%\GSMTCD200Controller`. The bridge runs in the background without any
+window on the desktop.
 
 Option B — manual: from the project root,
 
@@ -41,6 +53,11 @@ python -m pip install -r requirements.txt
 python -m d200_bridge
 ```
 
+This option runs the bridge in a foreground console window; it must keep running while
+you use the plugin, so start it before opening Ulanzi Studio and leave it open. The
+installer of Option A is the unattended alternative: it starts the bridge automatically
+and silently on every logon.
+
 The bridge listens only on `http://127.0.0.1:43821`. Verify it with
 `Invoke-RestMethod http://127.0.0.1:43821/health`. It is single-instance; stop a
 foreground instance with `python -m d200_bridge --stop`. A privacy-filtered diagnostics
@@ -48,6 +65,10 @@ bundle can be produced without starting the bridge using
 `python -m d200_bridge --diagnose`.
 
 ### Plugin installation
+
+Prerequisite: the companion bridge must already be installed and running (see
+[Companion setup](#companion-setup)); otherwise every key will show its offline fallback
+right after installation.
 
 - **Ulanzi Community Store**: once published, search for *Media Control for D200*.
 - **Manual**: download `com.arkamax404.mediacontrold200.ulanziPlugin.zip` from the
@@ -165,7 +186,8 @@ transitions may temporarily expose no duration; the key then shows `No timeline`
 
 | Symptom | Check |
 |---|---|
-| Keys show `Offline` | Start the companion bridge; verify `/health`; keep both apps on the same machine. |
+| Keys show `Offline` | The companion bridge is not running. Start it: with the installer, run the `GSMTCD200Controller-Companion` scheduled task (it also starts automatically at logon); manually, run `python -m d200_bridge`. Verify `http://127.0.0.1:43821/health`. Keep both apps on the same machine. |
+| Keys show `Offline` right after a reboot | Wait about ten seconds after logon — the scheduled task starts the bridge with a short delay. If it still does not come up, start the task manually and check the logs under `%LOCALAPPDATA%\GSMTCD200Controller\logs`. |
 | Keys show `Companion setup required` | The plugin could not read the bridge token; confirm the companion was set up for the same Windows user. |
 | Music icon instead of cover | The active GSMTC session did not provide a thumbnail; controls and text still work. |
 | Wrong media app is shown | Start playback in Spotify Desktop. Spotify sessions take precedence over the Windows current session. |

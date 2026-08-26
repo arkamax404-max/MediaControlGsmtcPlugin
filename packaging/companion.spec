@@ -44,7 +44,7 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True, name="GSMTCD200Companion",
     debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
-    console=True, disable_windowed_traceback=False,
+    console=False, disable_windowed_traceback=False,
 )
 coll = COLLECT(
     exe, a.binaries, a.datas, strip=False, upx=False,

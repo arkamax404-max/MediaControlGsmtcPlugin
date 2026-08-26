@@ -1,8 +1,8 @@
 import argparse, hashlib, json, re, shutil, stat, subprocess
 from pathlib import Path, PurePosixPath
 
-TREE_HASH = "f6318cf611a8a4dcd41725608b70646dff0908b278d5c5b837d687a64e1aa6e6"
-EXE_HASH = "9c351f3041336092bac859151acddc9d18a82319ff232abd1bb42881ea0fa4f4"
+TREE_HASH = "b283d01b94d737845ccbcd4c9f0b2b6a3b7e197071d3318eefbbf0be3d60f42c"
+EXE_HASH = "9248e1b93079f3717482a711f0ab883404d2eaafad990a3e32b667aabfbe67f7"
 LOCAL = re.compile(r'^[A-Z]:\\[^\x00-\x1f\\/:*?"<>|]+(?:\\[^\x00-\x1f\\/:*?"<>|]+)*$')
 
 def sha256(path): return hashlib.sha256(path.read_bytes()).hexdigest()
