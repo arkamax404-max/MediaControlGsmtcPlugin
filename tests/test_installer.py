@@ -57,21 +57,22 @@ class InstallerContractTests(unittest.TestCase):
         support = load_support()
         files = ["_internal/licenses/z.txt", "GSMTCD200Companion.exe",
                  "_internal/build-dependencies.json", "_internal/a.dll"]
-        include = support.generate_include(files)
-        self.assertEqual(include, support.generate_include(reversed(files)))
+        include = support.generate_include(files, "1.2.2")
+        self.assertEqual(include, support.generate_include(reversed(files), "1.2.2"))
         self.assertLess(include.index("a.dll"), include.index("licenses\\z.txt"))
         for forbidden in ("plugin", "node_modules", "tests", "openspec", ".."):
             self.assertNotIn(forbidden, include.lower())
         for required in ("build-dependencies.json", "licenses\\z.txt",
-                         "GSMTCD200Companion.exe"):
+                          "GSMTCD200Companion.exe"):
             self.assertIn(required, include)
+        self.assertIn(r"{app}\versions\1.2.2\bridge", include)
 
     def test_receipt_contains_only_hashes_versions_and_counts(self):
         support = load_support()
         snapshot = {"sha256": "d" * 64, "files": [{"path": "companion.iss", "sha256": "e" * 64}]}
         bundle = {"tree_sha256": "b" * 64, "file_count": 85, "total_size": 22500387,
                   "files": [{"path": "GSMTCD200Companion.exe", "sha256": "c" * 64}]}
-        receipt = support.build_receipt("482f680", snapshot, "7.1.0", "a" * 64, 123, bundle, bundle)
+        receipt = support.build_receipt("482f680", snapshot, "1.2.2", "7.1.0", "a" * 64, 123, bundle, bundle)
         encoded = json.dumps(receipt, sort_keys=True)
         self.assertNotRegex(encoded, r"[A-Za-z]:\\|/Users/|\\\\")
         self.assertEqual(receipt["source_bundle_tree_sha256"], "b" * 64)
@@ -80,7 +81,24 @@ class InstallerContractTests(unittest.TestCase):
         self.assertEqual(receipt["snapshot_bundle_exe_sha256"], "c" * 64)
         self.assertEqual(receipt["installer_size"], 123)
         self.assertEqual(receipt["companion_source_commit"], "482f680")
+        self.assertEqual(receipt["app_version"], "1.2.2")
         self.assertNotIn("source_commit", receipt)
+
+    def test_version_source_drives_installer_contract(self):
+        support = load_support()
+        self.assertEqual(support.companion_version(ROOT), "1.2.2")
+        with self.assertRaises(ValueError): support.generate_include(["GSMTCD200Companion.exe"], "1.2")
+        inno = INSTALLER.joinpath("companion.iss").read_text("utf-8")
+        build = INSTALLER.joinpath("build_installer.ps1").read_text("utf-8")
+        helper = INSTALLER.joinpath("manage_companion.ps1").read_text("utf-8")
+        self.assertIn("#error AppVersion is required", inno)
+        self.assertIn("OutputBaseFilename=GSMTCD200Companion-{#AppVersion}-local-unsigned", inno)
+        self.assertNotRegex(inno, r"1\.2\.\d")
+        self.assertIn("--define=AppVersion=$appVersion", build)
+        self.assertIn('"GSMTCD200Companion-{0}-local-unsigned.exe" -f $appVersion', build)
+        self.assertIn("companion_version(args.repo)", INSTALLER.joinpath("build_support.py").read_text("utf-8"))
+        self.assertIn("$script:companionVersion = $Matches[1]", helper)
+        self.assertIn("$health.companion_version -eq $script:companionVersion", helper)
 
     def test_bundle_and_installer_source_are_independently_hashed(self):
         support = load_support()
@@ -121,12 +139,12 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("PrivilegesRequiredOverridesAllowed=", setup)
         self.assertIn("SetupArchitecture=x64", setup)
         self.assertIn("DefaultDirName={localappdata}\\Programs\\GSMTCD200Controller", setup)
-        self.assertIn('#define AppVersion "1.2.1"', source)
+        self.assertIn("#ifndef AppVersion", source)
         self.assertIn("AppVersion={#AppVersion}", setup)
         self.assertNotIn("SignedUninstaller=yes", setup)
         self.assertNotIn("{userdesktop}", source)
         self.assertNotIn("ulanzi", source.lower())
-        self.assertIn("versions\\1.2.1\\bridge", source)
+        self.assertIn("versions\\{#AppVersion}\\bridge", source)
         icons = "\n".join(sections["Icons"])
         self.assertIn("--diagnose", icons); self.assertIn("--stop", icons)
         self.assertTrue(all("WorkingDir:" in line for line in sections["Icons"] if "Companion.exe" in line))
@@ -143,7 +161,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_manage_helper_dry_run_task_acl_and_exact_removal(self):
         script = INSTALLER / "manage_companion.ps1"
         local = "C:\\Synthetic User\\Local"
-        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.0\\bridge"
+        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge"
         data = local + "\\GSMTCD200Controller"
         common = ["pwsh", "-NoProfile", "-File", str(script), "-DryRun",
                   "-LocalAppDataRoot", local, "-VersionRoot", version,
@@ -167,6 +185,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("<URI>GSMTCD200Controller-Companion</URI>", xml)
         self.assertEqual((plan["phase"], plan["exit_code"]), ("success", 0))
         self.assertEqual((plan["runtime"]["process_alive"], plan["runtime"]["listener"], plan["runtime"]["mutex"], plan["runtime"]["health"]), (True, True, True, True))
+        self.assertEqual(plan["runtime"]["companion_version"], "1.2.2")
         self.assertEqual((plan["runtime"]["pid"], plan["runtime"]["path"]), (202, version + "\\GSMTCD200Companion.exe"))
         removal = subprocess.run(common + ["-Action", "UninstallTask"], capture_output=True,
                                  text=True, timeout=10, check=True)
@@ -195,7 +214,7 @@ class InstallerContractTests(unittest.TestCase):
             local = Path(directory); data = local / "GSMTCD200Controller"
             for name in ("config", "logs/nested", "cache", "diagnostics"): (data / name).mkdir(parents=True, exist_ok=True)
             for name in ("config/bridge-token", "logs/nested/item.txt", "logs/held.log", "diagnostics/held.zip"): (data / name).write_bytes(b"held")
-            version = local / "Programs/GSMTCD200Controller/versions/1.2.0/bridge"
+            version = local / "Programs/GSMTCD200Controller/versions/1.2.2/bridge"
             command = command_for(local, data, version)
             with (data / "logs/held.log").open("ab"), (data / "diagnostics/held.zip").open("ab"):
                 first_run = subprocess.run(command, capture_output=True, text=True, timeout=15); self.assertEqual(first_run.returncode, 0, first_run.stderr + first_run.stdout)
@@ -216,7 +235,7 @@ class InstallerContractTests(unittest.TestCase):
         for failure, expected in diagnostics.items():
             with tempfile.TemporaryDirectory(prefix="GSMTC DACL diagnostic ") as directory:
                 local = Path(directory); data = local / "GSMTCD200Controller"; data.mkdir()
-                version = local / "Programs/GSMTCD200Controller/versions/1.2.0/bridge"
+                version = local / "Programs/GSMTCD200Controller/versions/1.2.2/bridge"
                 command = command_for(local, data, version, failure)
                 result = subprocess.run(command, capture_output=True, text=True, timeout=15); state = json.loads(result.stdout)
                 self.assertEqual((result.returncode, state["phase"], state["exit_code"]), (expected[1], *expected), failure)
@@ -224,7 +243,7 @@ class InstallerContractTests(unittest.TestCase):
 
     def test_shared_migration_state_machine_failure_table(self):
         script = INSTALLER / "manage_companion.ps1"; local = "C:\\Synthetic User\\Local"
-        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.0\\bridge"; data = local + "\\GSMTCD200Controller"
+        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge"; data = local + "\\GSMTCD200Controller"
         prior_target = "C:\\Prior\\Companion.exe"
         prior_xml = f'<Task><Actions><Exec><Command>{prior_target}</Command></Exec></Actions></Task>'
         base = ["pwsh", "-NoProfile", "-File", str(script), "-DryRun", "-Action", "Install",
@@ -269,14 +288,33 @@ class InstallerContractTests(unittest.TestCase):
         script = INSTALLER / "manage_companion.ps1"
         base = ["pwsh", "-NoProfile", "-File", str(script), "-DryRun", "-Action", "Query",
                 "-LocalAppDataRoot", "C:\\Local", "-VersionRoot",
-                "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.0\\bridge",
+                "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge",
                 "-DataRoot", "C:\\Local\\GSMTCD200Controller", "-CurrentUserSid", "S-1-5-21-1-2-1000"]
         for extra in (["-TaskName", "*"], ["-DataRoot", "C:\\Other"],
-                      ["-VersionRoot", "C:\\Windows"]):
+                      ["-VersionRoot", "C:\\Windows"],
+                      ["-VersionRoot", "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2\\bridge"],
+                      ["-VersionRoot", "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge\\..\\bridge"]):
             result = subprocess.run(base + extra, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
         invalid_sid = subprocess.run(base[:-1] + ["not-a-sid"], capture_output=True, text=True, timeout=10)
         self.assertNotEqual(invalid_sid.returncode, 0)
+
+    def test_early_version_root_failure_writes_validation_status(self):
+        script = INSTALLER / "manage_companion.ps1"
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory)
+            status = local / "Programs/GSMTCD200Controller/installer/activation-status.txt"
+            status.parent.mkdir(parents=True)
+            status.write_text("pending", "utf-8")
+            version = local / "Programs/GSMTCD200Controller/versions/not-a-version/bridge"
+            data = local / "GSMTCD200Controller"
+            result = subprocess.run([
+                "pwsh", "-NoProfile", "-File", str(script), "-Action", "Query",
+                "-LocalAppDataRoot", str(local), "-VersionRoot", str(version),
+                "-DataRoot", str(data), "-StatusPath", str(status),
+            ], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 10, result.stderr)
+            self.assertEqual(status.read_text("utf-8"), "validation")
 
 
 if __name__ == "__main__":

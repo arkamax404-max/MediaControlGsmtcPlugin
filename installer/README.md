@@ -24,7 +24,7 @@ compilation. Receipts separately identify source and compiled snapshots without 
 
 ## Installed Layout
 
-- Immutable bridge: `%LOCALAPPDATA%\Programs\GSMTCD200Controller\versions\1.2.0\bridge`
+- Immutable bridge: `%LOCALAPPDATA%\Programs\GSMTCD200Controller\versions\<version>\bridge`
 - Helper: `%LOCALAPPDATA%\Programs\GSMTCD200Controller\installer`
 - Mutable data: `%LOCALAPPDATA%\GSMTCD200Controller`
 - Root task: `GSMTCD200Controller-Companion`, interactive current user, 10-second delay

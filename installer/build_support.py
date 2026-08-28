@@ -4,6 +4,13 @@ from pathlib import Path, PurePosixPath
 TREE_HASH = "1f42f3a388a2bd652e942fa886800caf30af1cd7a34f735286a1a8c239c59af3"
 EXE_HASH = "d838eee3a3380b31077821b9ba58fc22cb4935a48079a3f2473582156f1b1f72"
 LOCAL = re.compile(r'^[A-Z]:\\[^\x00-\x1f\\/:*?"<>|]+(?:\\[^\x00-\x1f\\/:*?"<>|]+)*$')
+VERSION = re.compile(r'^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$')
+
+def companion_version(repo):
+    source = (Path(repo) / "d200_bridge" / "version.py").read_text("utf-8")
+    matches = re.findall(r'^COMPANION_VERSION\s*=\s*["\']([^"\']+)["\']\s*$', source, re.MULTILINE)
+    if len(matches) != 1 or not VERSION.fullmatch(matches[0]): raise ValueError("invalid companion version source")
+    return matches[0]
 
 def sha256(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 def canonical(raw):
@@ -34,13 +41,14 @@ def validate_roots(repo, roots, managed=()):
         for right in roots[index + 1:]:
             if within(left, right) or within(right, left): raise ValueError("overlapping roots")
     return roots
-def generate_include(files):
+def generate_include(files, app_version):
+    if not VERSION.fullmatch(app_version): raise ValueError("invalid app version")
     lines = []
     for value in sorted(files, key=str.lower):
         path = PurePosixPath(value)
         if path.is_absolute() or ".." in path.parts or any(part.lower() in {"tests", "plugin", "node_modules", "openspec", ".atl"} for part in path.parts): raise ValueError("unsafe bundle path")
         source = str(path).replace("/", "\\"); parent = str(path.parent).replace("/", "\\")
-        destination = "{app}\\versions\\1.2.1\\bridge" + ("" if parent == "." else "\\" + parent)
+        destination = "{app}\\versions\\" + app_version + "\\bridge" + ("" if parent == "." else "\\" + parent)
         lines.append(f'Source: "{{#BundleRoot}}\\{source}"; DestDir: "{destination}"; Flags: ignoreversion')
     return "\n".join(lines) + "\n"
 def enumerate_bundle(root):
@@ -73,11 +81,11 @@ def source_snapshot(source_root, include):
     digest = hashlib.sha256()
     for item in files: digest.update(item["path"].encode() + b"\0" + item["sha256"].encode() + b"\n")
     return {"sha256": digest.hexdigest(), "files": files}
-def build_receipt(companion_commit, snapshot, inno, installer_hash, installer_size, source_bundle, compiled_bundle):
+def build_receipt(companion_commit, snapshot, app_version, inno, installer_hash, installer_size, source_bundle, compiled_bundle):
     source_executable = next(item for item in source_bundle["files"] if item["path"] == "GSMTCD200Companion.exe")
     executable = next(item for item in compiled_bundle["files"] if item["path"] == "GSMTCD200Companion.exe")
     return {"schema_version": 3, "companion_source_commit": companion_commit,
-        "installer_source_snapshot_sha256": snapshot["sha256"], "installer_source_files": snapshot["files"], "app_version": "1.2.1",
+        "installer_source_snapshot_sha256": snapshot["sha256"], "installer_source_files": snapshot["files"], "app_version": app_version,
         "inno_version": inno, "source_bundle_tree_sha256": source_bundle["tree_sha256"],
         "source_bundle_exe_sha256": source_executable["sha256"], "snapshot_bundle_tree_sha256": compiled_bundle["tree_sha256"], "snapshot_bundle_exe_sha256": executable["sha256"],
         "source_bundle_file_count": source_bundle["file_count"], "source_bundle_total_size": source_bundle["total_size"],
@@ -99,15 +107,17 @@ def prepare(args):
     if exe["sha256"] != EXE_HASH: raise ValueError("unexpected executable identity")
     compiled = create_bundle_snapshot(bundle, metadata / "bundle-snapshot", actual)
     (metadata / "bundle-snapshot-manifest.json").write_text(json.dumps(compiled, sort_keys=True, indent=2) + "\n", "utf-8")
-    include = metadata / "bundle-files.iss"; include.write_text(generate_include(item["path"] for item in compiled["files"]), "utf-8")
+    include = metadata / "bundle-files.iss"; include.write_text(generate_include((item["path"] for item in compiled["files"]), companion_version(args.repo)), "utf-8")
     (metadata / "installer-source-snapshot.json").write_text(json.dumps(source_snapshot(Path(args.source_root), include), sort_keys=True, indent=2) + "\n", "utf-8")
 def receipt(args):
     source = json.loads(Path(args.bundle_manifest).read_text("utf-8")); compiled = json.loads(Path(args.snapshot_manifest).read_text("utf-8")); installer = Path(args.installer)
     verify_bundle(Path(args.snapshot_root), compiled)
     if not same_bundle(source, compiled) or compiled["tree_sha256"] != TREE_HASH or compiled["file_count"] != 85 or next(item for item in compiled["files"] if item["path"] == "GSMTCD200Companion.exe")["sha256"] != EXE_HASH: raise ValueError("unexpected compiled snapshot identity")
+    app_version = companion_version(args.repo)
+    if Path(args.include).read_text("utf-8") != generate_include((item["path"] for item in compiled["files"]), app_version): raise ValueError("generated include version mismatch")
     snapshot = json.loads(Path(args.source_snapshot).read_text("utf-8"))
     if snapshot != source_snapshot(Path(args.source_root), Path(args.include)): raise ValueError("installer source changed during build")
-    data = build_receipt(args.companion_commit, snapshot, args.inno_version, sha256(installer), installer.stat().st_size, source, compiled)
+    data = build_receipt(args.companion_commit, snapshot, app_version, args.inno_version, sha256(installer), installer.stat().st_size, source, compiled)
     Path(args.output).write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", "utf-8")
 def main():
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="command", required=True)
@@ -115,6 +125,6 @@ def main():
     for name in ("repo", "bundle", "output", "metadata", "python", "verifier", "source_root"): prep.add_argument("--" + name.replace("_", "-"), required=True)
     prep.add_argument("--managed-root", action="append", required=True)
     rec = sub.add_parser("receipt")
-    for name in ("companion_commit", "source_snapshot", "source_root", "include", "inno_version", "installer", "bundle_manifest", "snapshot_manifest", "snapshot_root", "output"): rec.add_argument("--" + name.replace("_", "-"), required=True)
+    for name in ("repo", "companion_commit", "source_snapshot", "source_root", "include", "inno_version", "installer", "bundle_manifest", "snapshot_manifest", "snapshot_root", "output"): rec.add_argument("--" + name.replace("_", "-"), required=True)
     args = parser.parse_args(); prepare(args) if args.command == "prepare" else receipt(args)
 if __name__ == "__main__": main()
