@@ -29,7 +29,7 @@ compilation. Receipts separately identify source and compiled snapshots without 
 - Mutable data: `%LOCALAPPDATA%\GSMTCD200Controller`
 - Root task: `GSMTCD200Controller-Companion`, interactive current user, 10-second delay
 
-The task uses `IgnoreNew`, least privilege, no password, three 30-second restart
+The task uses `IgnoreNew`, least privilege, no password, three one-minute restart
 attempts, no execution limit, and no battery/network restriction. Task Scheduler
 does not expose a separate ten-minute retry window for this XML policy.
 
@@ -45,3 +45,10 @@ seconds; any stop/delete/restore/restart failure exits nonzero and
 reports incomplete rollback. Files may remain because file rollback is Slice 6.
 Helper failures expose only a bounded phase and code; Setup returns custom code 1603
 while retaining the uninstall entry for honest cleanup of files that may remain.
+
+Legacy tasks created by affected installers can grant the user read-only scheduler
+rights. The helper repairs that task DACL in place before updating it. If Windows denies
+the repair, open Task Scheduler as administrator, delete only
+`\GSMTCD200Controller-Companion`, then rerun the installer. A later activation rollback
+restores the old task XML and state but retains the repaired DACL so the task remains
+upgradable.

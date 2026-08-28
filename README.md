@@ -191,6 +191,7 @@ transitions may temporarily expose no duration; the key then shows `No timeline`
 |---|---|
 | Keys show `Offline` | The companion bridge is not running. If it is not installed yet, run the prebuilt installer from the [latest release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases). With the installer, run the `GSMTCD200Controller-Companion` scheduled task (it also starts automatically at logon); manually, run `python -m d200_bridge`. Verify `http://127.0.0.1:43821/health`. Keep both apps on the same machine. |
 | Keys show `Offline` right after a reboot | Wait about ten seconds after logon — the scheduled task starts the bridge with a short delay. If it still does not come up, start the task manually and check the logs under `%LOCALAPPDATA%\GSMTCD200Controller\logs`. |
+| Installer reports a legacy task ACL repair failure | Open Task Scheduler as administrator, delete only `\GSMTCD200Controller-Companion`, then rerun the installer. |
 | Keys show `Companion setup required` | The plugin could not read the bridge token; confirm the companion was set up for the same Windows user. |
 | Music icon instead of cover | The active GSMTC session did not provide a thumbnail; controls and text still work. |
 | Wrong media app is shown | Start playback in Spotify Desktop. Spotify sessions take precedence over the Windows current session. |

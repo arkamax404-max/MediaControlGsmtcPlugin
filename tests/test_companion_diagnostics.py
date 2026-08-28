@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, Mock, patch
 import d200_bridge.__main__ as bridge_main
 from d200_bridge.diagnostics import build_zip, bounded_http_get, create_diagnostics, read_log_tail
 from d200_bridge.paths import CompanionPaths
+from d200_bridge.version import COMPANION_VERSION
 
 
 TOKEN = "T" * 43
@@ -65,7 +66,8 @@ class DiagnosticsTests(unittest.TestCase):
                                     for name in archive.namelist()[:3]))
             self.assertEqual(summary["generated_at"], "2026-08-24T12:30:00Z")
             self.assertEqual(summary["health_status"], "degraded")
-            self.assertEqual(runtime, {"artwork_id_present": True, "audio_available": False,
+            self.assertEqual(runtime, {"companion_version": COMPANION_VERSION,
+                "artwork_id_present": True, "audio_available": False,
                 "available": True, "online": True, "payload_size": requests[1][2] * 0
                 + len(json.dumps({"available": True, "timeline_available": True,
                     "audio_available": False, "artwork_id": "a" * 64,
@@ -121,6 +123,7 @@ class DiagnosticsTests(unittest.TestCase):
                 with zipfile.ZipFile(result) as archive:
                     runtime = json.loads(archive.read("runtime.json"))
                 self.assertEqual(runtime["reason"], reason)
+                self.assertEqual(runtime["companion_version"], COMPANION_VERSION)
                 self.assertTrue(result.exists())
                 if failure in {"token", "invalid_token"}: self.assertEqual(len(calls), 1)
 

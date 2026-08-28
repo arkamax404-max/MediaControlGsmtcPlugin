@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).parents[1]
@@ -274,6 +276,36 @@ class PackagingContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "bad.dll").write_bytes(b"MZ")
             with self.assertRaises(RuntimeError): verifier.verify_pe_imports(Path(directory), PE)
+
+    def test_frozen_diagnostics_rejects_invalid_runtime_versions_before_manifest(self):
+        verifier = load_module("verify_companion_bundle.py")
+        entries = (("summary.json", b"{}"), ("dependencies.json", b"{}"), ("logs.txt", b""))
+        expected_version = verifier.expected_companion_version()
+        valid = {"companion_version": expected_version, "online": False,
+                 "reason": "health_unreachable"}
+        cases = (("matching", valid, None),
+                 ("missing", {"online": False, "reason": "health_unreachable"},
+                  "runtime schema mismatch"),
+                 ("malformed", b"{", "runtime payload malformed"),
+                 ("mismatched", {**valid, "companion_version": "0.0.0"},
+                  "companion version mismatch"))
+        for name, runtime, error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / "LocalData" / "GSMTCD200Controller" / "diagnostics"
+                output.mkdir(parents=True)
+                with zipfile.ZipFile(output / "diagnostics.zip", "w") as archive:
+                    archive.writestr("summary.json", b"{}")
+                    archive.writestr("runtime.json", runtime if isinstance(runtime, bytes)
+                                     else json.dumps(runtime).encode("utf-8"))
+                    for entry, content in entries[1:]: archive.writestr(entry, content)
+                with patch.object(verifier.subprocess, "run",
+                                  return_value=type("Result", (), {"returncode": 0})()):
+                    if error:
+                        with self.assertRaisesRegex(RuntimeError, error):
+                            verifier.frozen_diagnostics(Path("companion.exe"), root)
+                    else:
+                        verifier.frozen_diagnostics(Path("companion.exe"), root)
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,37 @@ EXCLUDED_MODULES = ("ssl", "_ssl", "_hashlib", "pyexpat", "_elementtree", "xml.p
 EXCLUDED_FILES = {"_ssl.pyd", "_hashlib.pyd", "pyexpat.pyd", "_elementtree.pyd",
                   "_lzma.pyd", "_zstd.pyd", "libssl-3.dll", "libcrypto-3.dll"}
 NATIVE_NOTICE_KEYS = {"cpython-runtime", "pillow-codecs", "psutil-native", "pywinrt-native"}
+VERSION = re.compile(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")
+RUNTIME_ONLINE_KEYS = {"companion_version", "online", "available", "timeline_available",
+                       "audio_available", "artwork_id_present", "payload_size"}
+RUNTIME_OFFLINE_KEYS = {"companion_version", "online", "reason"}
+
+def expected_companion_version():
+    source = Path(__file__).resolve().parents[1] / "d200_bridge" / "version.py"
+    matches = re.findall(
+        r'^COMPANION_VERSION\s*=\s*["\']((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))["\']\s*$',
+        source.read_text("utf-8"), re.MULTILINE)
+    if len(matches) != 1 or not VERSION.fullmatch(matches[0]):
+        raise RuntimeError("Invalid companion version source")
+    return matches[0]
+
+def verify_runtime_diagnostics(payload, expected_version):
+    if (not isinstance(payload, dict) or "companion_version" not in payload
+            or not isinstance(payload["companion_version"], str)):
+        raise RuntimeError("Frozen diagnostics runtime schema mismatch")
+    if payload["companion_version"] != expected_version:
+        raise RuntimeError("Frozen diagnostics companion version mismatch")
+    if payload.get("online") is True:
+        if (set(payload) != RUNTIME_ONLINE_KEYS
+                or not all(isinstance(payload[name], bool) for name in (
+                    "available", "timeline_available", "audio_available", "artwork_id_present"))
+                or type(payload["payload_size"]) is not int or payload["payload_size"] < 0):
+            raise RuntimeError("Frozen diagnostics runtime schema mismatch")
+    elif payload.get("online") is False:
+        if set(payload) != RUNTIME_OFFLINE_KEYS or not isinstance(payload["reason"], str):
+            raise RuntimeError("Frozen diagnostics runtime schema mismatch")
+    else:
+        raise RuntimeError("Frozen diagnostics runtime schema mismatch")
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -143,6 +174,11 @@ def frozen_diagnostics(executable, synthetic_root):
     with zipfile.ZipFile(outputs[0]) as archive:
         if archive.namelist() != ["summary.json", "runtime.json", "dependencies.json", "logs.txt"]:
             raise RuntimeError("Frozen diagnostics schema mismatch")
+        try:
+            runtime = json.loads(archive.read("runtime.json").decode("utf-8"))
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+            raise RuntimeError("Frozen diagnostics runtime payload malformed") from error
+        verify_runtime_diagnostics(runtime, expected_companion_version())
         content = b"".join(archive.read(name) for name in archive.namelist())
         if len(content) > 1024 * 1024 or re.search(rb"Bearer\s+|data:image|[A-Za-z0-9_-]{43}", content):
             raise RuntimeError("Frozen diagnostics privacy check failed")

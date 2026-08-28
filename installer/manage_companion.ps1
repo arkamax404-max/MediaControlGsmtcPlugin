@@ -9,6 +9,8 @@ param(
     [string]$FailurePoints = '',
     [string]$PriorTaskXml,
     [ValidateSet('Running','Ready','Disabled')][string]$PriorTaskStatus = 'Ready',
+    [string]$PriorTaskSddl,
+    [string]$PriorTaskOwner,
     [string]$StatusPath,
     [switch]$DisposableDaclTest,
     [switch]$DryRun
@@ -61,18 +63,61 @@ function Test-Failure([string]$Name) { return $script:failures.ContainsKey($Name
 function Test-TaskNotFoundHResult([object]$Value) { try { $code=[uint64]([int64]$Value -band 0xffffffffL) } catch { return $false }; return $code -in @(0x80070002L,0x8004130FL) }
 function Set-Phase([string]$Name, [int]$Code) { $script:phase=$Name; $script:exitCode=$Code; if($DryRun){$script:phaseTrace += $Name} }
 function Save-Phase { if (-not $DryRun -and $script:statusPathIsSafe) { [IO.File]::WriteAllText($StatusPath, $script:phase, [Text.UTF8Encoding]::new($false)) } }
+function Get-TaskDacl([string]$SecurityDescriptor) {
+    return ([Security.AccessControl.RawSecurityDescriptor]::new($SecurityDescriptor)).GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
+}
+function Normalize-TaskDacl([string]$Dacl) {
+    $normalized = [regex]::Replace($Dacl.ToUpperInvariant(), '0X0+([0-9A-F]+)', '0X$1')
+    return $normalized.Replace('D:PAI(', 'D:P(')
+}
+function Get-TaskOwner([string]$SecurityDescriptor) {
+    return ([Security.AccessControl.RawSecurityDescriptor]::new($SecurityDescriptor)).Owner.Value
+}
+function Get-PrincipalSid([string]$Identity) {
+    try { return ([Security.Principal.SecurityIdentifier]::new($Identity)).Value } catch { return ([Security.Principal.NTAccount]::new($Identity)).Translate([Security.Principal.SecurityIdentifier]).Value }
+}
+function Get-TaskSecurityDescriptor($Raw) {
+    if ($DryRun) { return $Raw.SecurityDescriptor }
+    return $Raw.GetSecurityDescriptor(7)
+}
+function Test-TaskSecurityDescriptor([string]$SecurityDescriptor) {
+    return (Normalize-TaskDacl (Get-TaskDacl $SecurityDescriptor)) -eq (Normalize-TaskDacl $script:taskDacl)
+}
 function Get-OwnedTask {
-    if ($DryRun) { $probes=@{QueryMissingSigned=-2147024894;QueryMissingUnsigned=2147942402;QueryAccess=2147942405;QueryService=2147750677}; foreach($name in $probes.Keys){if(Test-Failure $name){if(Test-TaskNotFoundHResult $probes[$name]){return $null};throw 'Task query failed'}}; if (Test-Failure 'Query') { throw 'Task query failed' }; return $script:memoryTask }
+    if ($DryRun) { $probes=@{QueryMissingSigned=-2147024894;QueryMissingUnsigned=2147942402;QueryAccess=2147942405;QueryService=2147750677}; foreach($name in $probes.Keys){if(Test-Failure $name){if(Test-TaskNotFoundHResult $probes[$name]){return $null};throw 'Task query failed'}}; if (Test-Failure 'Query') { throw 'Task query failed' }; if(-not $script:memoryTask){return $null}; return [pscustomobject]@{Xml=$script:memoryTask.Xml;Status=$script:memoryTask.Status;Target=$script:memoryTask.Target;Principal=$script:memoryTask.Principal;LogonType=$script:memoryTask.LogonType;SecurityDescriptor=$script:memoryTask.SecurityDescriptor} }
     try { $raw = $script:taskFolder.GetTask($TaskName) } catch { if (Test-TaskNotFoundHResult $_.Exception.GetBaseException().HResult) { return $null }; throw }
     if (-not $raw) { return $null }; $actions = $raw.Definition.Actions
     if ($actions.Count -ne 1 -or $actions.Item(1).Type -ne 0) { throw 'Unexpected task definition' }
-    $states = @('Unknown','Disabled','Queued','Ready','Running'); return [pscustomobject]@{Xml=$raw.Xml;Status=$states[[int]$raw.State];Target=[IO.Path]::GetFullPath($actions.Item(1).Path);Raw=$raw}
+    $securityDescriptor = Get-TaskSecurityDescriptor $raw
+    $states = @('Unknown','Disabled','Queued','Ready','Running'); return [pscustomobject]@{Xml=$raw.Xml;Status=$states[[int]$raw.State];Target=[IO.Path]::GetFullPath($actions.Item(1).Path);Owner=(Get-TaskOwner $securityDescriptor);Dacl=(Get-TaskDacl $securityDescriptor);Principal=(Get-PrincipalSid $raw.Definition.Principal.UserId);LogonType=[int]$raw.Definition.Principal.LogonType;Raw=$raw}
 }
-function Set-OwnedTask([string]$Xml, [string]$Target, [string]$Status, [string]$Phase) {
-    if ($DryRun) { if (Test-Failure $Phase) { throw "$Phase failed" }; $script:memoryTask = [pscustomobject]@{Xml=$Xml;Status=if($Status -eq 'Disabled'){'Disabled'}else{'Ready'};Target=$Target}; return }
-    [void]$script:taskFolder.RegisterTask($TaskName, $Xml, 6, $null, $null, 3, $null)
+function Test-OwnedTask([object]$Task, [string]$Target, [string]$Status) {
+    if (-not $Task) { return $false }
+    $securityDescriptor = if($DryRun){$Task.SecurityDescriptor}else{Get-TaskSecurityDescriptor $Task.Raw}
+    return $Task.Target -ceq $Target -and $Task.Principal -eq $CurrentUserSid -and $Task.LogonType -eq 3 -and (Test-TaskSecurityDescriptor $securityDescriptor) -and (($Status -eq 'Disabled' -and $Task.Status -eq 'Disabled') -or ($Status -ne 'Disabled' -and $Task.Status -in @('Ready','Running')))
+}
+function Set-OwnedTask([string]$Xml, [string]$Target, [string]$Status, [string]$Phase, [bool]$InitialRegistration=$false) {
+    $sddl = if ($InitialRegistration) { $script:taskDacl } else { $null }
+    $script:taskRegistrations += [ordered]@{flags=0x16;sddl=$sddl;initial=$InitialRegistration}
+    if ($DryRun) { if (Test-Failure $Phase) { throw "$Phase failed" }; if(-not $script:memoryTask){$script:memoryTask=[pscustomobject]@{Xml='';Status='Ready';Target='';Principal=$CurrentUserSid;LogonType=3;SecurityDescriptor=$script:taskSecurityDescriptor}}; if($InitialRegistration){$script:memoryTask.SecurityDescriptor=$script:taskSecurityDescriptor}; $script:memoryTask.Xml=$Xml; $script:memoryTask.Status=if($Status -eq 'Disabled'){'Disabled'}else{'Ready'}; $script:memoryTask.Target=$Target; $script:memoryTask.Principal=$CurrentUserSid; $script:memoryTask.LogonType=3; if(-not (Test-OwnedTask $script:memoryTask $Target $Status)){throw 'Task registration verification failed'}; return }
+    [void]$script:taskFolder.RegisterTask($TaskName, $Xml, 0x16, $CurrentUserSid, $null, 3, $sddl)
     $task = Get-OwnedTask
-    if (-not $task -or $task.Target -cne $Target -or ($Status -eq 'Disabled' -and $task.Status -ne 'Disabled') -or ($Status -ne 'Disabled' -and $task.Status -notin @('Ready','Running'))) { throw 'Task registration verification failed' }
+    if (-not (Test-OwnedTask $task $Target $Status)) { throw 'Task registration verification failed' }
+}
+function Repair-TaskDacl($Task) {
+    $securityDescriptor = if($DryRun){$Task.SecurityDescriptor}else{Get-TaskSecurityDescriptor $Task.Raw}
+    if (Test-TaskSecurityDescriptor $securityDescriptor) { return $false }
+    Set-Phase 'task_acl_repair' 27
+    try {
+        if (Test-Failure 'TaskAclRepair') { throw 'Task ACL repair denied' }
+        if ($DryRun) { $script:memoryTask.SecurityDescriptor=$script:taskSecurityDescriptor } else { $Task.Raw.SetSecurityDescriptor($script:taskDacl, 0) }
+        $verified = Get-OwnedTask
+        if (-not $verified) { throw 'Task ACL repair verification failed' }
+        $verifiedDescriptor = if($DryRun){$verified.SecurityDescriptor}else{Get-TaskSecurityDescriptor $verified.Raw}
+        if (-not (Test-TaskSecurityDescriptor $verifiedDescriptor)) { throw 'Task ACL repair verification failed' }
+        $script:taskAclRepaired=$true
+        return $true
+    } catch { throw 'Task ACL repair denied; delete only the named task as administrator, then rerun the installer' }
 }
 function Remove-OwnedTask {
     if ($DryRun) { if (Test-Failure 'Delete') { throw 'Candidate task removal failed' }; $script:memoryTask = $null }
@@ -99,7 +144,7 @@ function Test-CandidateHealth {
     if ($DryRun) { return (Test-ExactRuntime 202 $exe) -and -not (@('CandidateStop','Delete','Restore','Restart','PriorImmediateExit') | Where-Object { Test-Failure $_ }) }
     $deadline = [DateTime]::UtcNow.AddSeconds(30); while ([DateTime]::UtcNow -lt $deadline) { if ($script:candidateProcess.HasExited) { return $false }; if (Test-ExactRuntime $script:candidatePid $script:candidatePath) { return $true }; Start-Sleep -Milliseconds 250 }; return $false
 }
-function Write-DryResult([string]$ErrorText) { if($DisposableDaclTest){[ordered]@{success=(!$ErrorText);phase=$script:phase;exit_code=$script:exitCode;phase_trace=$script:phaseTrace;dacl=$script:daclStats}|ConvertTo-Json -Compress;return}; [ordered]@{operation=$operation;success=(!$ErrorText);phase=$script:phase;exit_code=$script:exitCode;phase_trace=$script:phaseTrace;dacl=$script:daclStats;error=$ErrorText;rollback=$script:rollback;rollback_errors=$script:rollbackErrors;task=if($script:memoryTask){[ordered]@{status=$script:memoryTask.Status;target=$script:memoryTask.Target}}else{$null};owner=$script:owner;runtime=$script:runtime;task_name=$TaskName;sid=$CurrentUserSid;task_xml=$xml;directory_sddl=$dirAcl.GetSecurityDescriptorSddlForm('All');acl_targets=@($ownedDirs + $tokenPath)} | ConvertTo-Json -Compress }
+function Write-DryResult([string]$ErrorText) { if($DisposableDaclTest){[ordered]@{success=(!$ErrorText);phase=$script:phase;exit_code=$script:exitCode;phase_trace=$script:phaseTrace;dacl=$script:daclStats}|ConvertTo-Json -Compress;return}; [ordered]@{operation=$operation;success=(!$ErrorText);phase=$script:phase;exit_code=$script:exitCode;phase_trace=$script:phaseTrace;dacl=$script:daclStats;error=$ErrorText;rollback=$script:rollback;rollback_errors=$script:rollbackErrors;task=if($script:memoryTask){[ordered]@{status=$script:memoryTask.Status;target=$script:memoryTask.Target;owner=(Get-TaskOwner $script:memoryTask.SecurityDescriptor);dacl=(Get-TaskDacl $script:memoryTask.SecurityDescriptor)}}else{$null};task_registrations=$script:taskRegistrations;task_acl_repaired=$script:taskAclRepaired;owner=$script:owner;runtime=$script:runtime;task_name=$TaskName;sid=$CurrentUserSid;task_xml=$xml;directory_sddl=$dirAcl.GetSecurityDescriptorSddlForm('All');acl_targets=@($ownedDirs + $tokenPath)} | ConvertTo-Json -Compress }
 $script:phase='validation'; $script:exitCode=10; $script:phaseTrace=@(); $script:statusPathIsSafe=$false
 try {
     $LocalAppDataRoot = Assert-Canonical $LocalAppDataRoot
@@ -120,29 +165,30 @@ try {
     if ($DryRun) { [ordered]@{success=$false;phase=$script:phase;exit_code=$script:exitCode;error=$_.Exception.Message}|ConvertTo-Json -Compress }
     exit $script:exitCode
 }
-if (-not $DryRun -and ($FailurePoints -or $PriorTaskXml)) { throw 'Simulation options are dry-run only' }; if (-not $DryRun -and $CurrentUserSid) { throw 'SID injection is dry-run only' }
+if (-not $DryRun -and ($FailurePoints -or $PriorTaskXml -or $PriorTaskSddl -or $PriorTaskOwner)) { throw 'Simulation options are dry-run only' }; if (-not $DryRun -and $CurrentUserSid) { throw 'SID injection is dry-run only' }
 if($DisposableDaclTest -and (-not $DryRun -or -not $DataRoot.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase))){throw 'Disposable DACL test requires user temp dry-run'}
-$allowedFailures = @('Dacl','DaclMetadata','DaclDescriptor','DaclOwner','DaclRules','DaclCompare','DaclApply','DaclVerify','DaclEnumerate','Query','QueryMissingSigned','QueryMissingUnsigned','QueryAccess','QueryService','PriorStop','Create','Start','Health','CandidateStop','CandidateAliveNoListener','Delete','Restore','Restart','PriorImmediateExit') + @(1..6 | ForEach-Object { "PriorPoll$_" }); $script:failures = @{}; foreach ($point in @($FailurePoints.Split(',', [StringSplitOptions]::RemoveEmptyEntries))) { if ($point -notin $allowedFailures) { throw 'Unknown failure point' }; $script:failures[$point] = $true }
+$allowedFailures = @('Dacl','DaclMetadata','DaclDescriptor','DaclOwner','DaclRules','DaclCompare','DaclApply','DaclVerify','DaclEnumerate','Query','QueryMissingSigned','QueryMissingUnsigned','QueryAccess','QueryService','TaskAclRepair','PriorStop','Create','Start','Health','CandidateStop','CandidateAliveNoListener','Delete','Restore','Restart','PriorImmediateExit') + @(1..6 | ForEach-Object { "PriorPoll$_" }); $script:failures = @{}; foreach ($point in @($FailurePoints.Split(',', [StringSplitOptions]::RemoveEmptyEntries))) { if ($point -notin $allowedFailures) { throw 'Unknown failure point' }; $script:failures[$point] = $true }
 if (-not $CurrentUserSid) { $CurrentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }; try { $userSid = [Security.Principal.SecurityIdentifier]::new($CurrentUserSid) } catch { throw 'Invalid user SID' }
-$CurrentUserSid = $userSid.Value; $exe = Join-Path $VersionRoot 'GSMTCD200Companion.exe'; $dirAcl = New-ExactAcl $userSid $true; $fileAcl = New-ExactAcl $userSid $false
+$CurrentUserSid = $userSid.Value; $exe = Join-Path $VersionRoot 'GSMTCD200Companion.exe'; $dirAcl = New-ExactAcl $userSid $true; $fileAcl = New-ExactAcl $userSid $false; $script:taskDacl="D:P(A;;0x001301BF;;;$CurrentUserSid)(A;;FA;;;SY)(A;;FA;;;BA)"; $script:taskSecurityDescriptor="O:$CurrentUserSid$script:taskDacl"
 $ownedDirs = @($DataRoot) + @('config','logs','cache','diagnostics' | ForEach-Object { Join-Path $DataRoot $_ }); $tokenPath = Join-Path $DataRoot 'config\bridge-token'; $escapedExe = [Security.SecurityElement]::Escape($exe); $escapedWork = [Security.SecurityElement]::Escape($VersionRoot)
-$xml = "<?xml version=`"1.0`" encoding=`"UTF-16`"?><Task version=`"1.4`" xmlns=`"http://schemas.microsoft.com/windows/2004/02/mit/task`"><RegistrationInfo><URI>$TaskName</URI></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>$CurrentUserSid</UserId><Delay>PT10S</Delay></LogonTrigger></Triggers><Principals><Principal id=`"Author`"><UserId>$CurrentUserSid</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT30S</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context=`"Author`"><Exec><Command>$escapedExe</Command><WorkingDirectory>$escapedWork</WorkingDirectory></Exec></Actions></Task>"
-$operation = if ($Action -eq 'UninstallTask') { 'delete_exact_task' } elseif ($Action -eq 'Query') { 'query_exact_task' } else { 'migrate_exact_task' }; $script:rollback = 'none'; $script:rollbackErrors = @(); $script:owner = 'None'; $script:candidateStarted=$false; $script:candidatePid=0; $script:candidatePath=$exe; $script:phase='query'; $script:exitCode=21; $script:phaseTrace=@(); $script:daclStats=$null; $script:runtime=[ordered]@{process_alive=$false;listener=$false;mutex=$false;health=$false;companion_version=$script:companionVersion;pid=0;path='';stable_polls=0;stop_invoked=$false}
-if ($DryRun) { $script:memoryTask = if($PriorTaskXml){[pscustomobject]@{Xml=$PriorTaskXml;Status=$PriorTaskStatus;Target=(Get-XmlTarget $PriorTaskXml)}}else{$null}; if ($PriorTaskXml -and $PriorTaskStatus -eq 'Running') { $script:owner='Prior'; $script:runtime=[ordered]@{process_alive=$true;listener=$true;mutex=$true;health=$true;companion_version=$script:companionVersion;pid=101;path=$script:memoryTask.Target;stable_polls=0;stop_invoked=$false} } }
+$xml = "<?xml version=`"1.0`" encoding=`"UTF-16`"?><Task version=`"1.4`" xmlns=`"http://schemas.microsoft.com/windows/2004/02/mit/task`"><RegistrationInfo><URI>$TaskName</URI></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>$CurrentUserSid</UserId><Delay>PT10S</Delay></LogonTrigger></Triggers><Principals><Principal id=`"Author`"><UserId>$CurrentUserSid</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context=`"Author`"><Exec><Command>$escapedExe</Command><WorkingDirectory>$escapedWork</WorkingDirectory></Exec></Actions></Task>"
+$operation = if ($Action -eq 'UninstallTask') { 'delete_exact_task' } elseif ($Action -eq 'Query') { 'query_exact_task' } else { 'migrate_exact_task' }; $script:rollback = 'none'; $script:rollbackErrors = @(); $script:owner = 'None'; $script:candidateStarted=$false; $script:candidatePid=0; $script:candidatePath=$exe; $script:phase='query'; $script:exitCode=21; $script:phaseTrace=@(); $script:daclStats=$null; $script:taskRegistrations=@(); $script:taskAclRepaired=$false; $script:runtime=[ordered]@{process_alive=$false;listener=$false;mutex=$false;health=$false;companion_version=$script:companionVersion;pid=0;path='';stable_polls=0;stop_invoked=$false}
+if ($DryRun) { $legacyDacl="D:P(A;;FR;;;$CurrentUserSid)(A;;FA;;;SY)(A;;FA;;;BA)"; $priorDescriptor=if($PriorTaskSddl){$PriorTaskSddl}else{"O:" + $(if($PriorTaskOwner){$PriorTaskOwner}else{$CurrentUserSid}) + $legacyDacl}; $script:memoryTask = if($PriorTaskXml){[pscustomobject]@{Xml=$PriorTaskXml;Status=$PriorTaskStatus;Target=(Get-XmlTarget $PriorTaskXml);Principal=$CurrentUserSid;LogonType=3;SecurityDescriptor=$priorDescriptor}}else{$null}; if ($PriorTaskXml -and $PriorTaskStatus -eq 'Running') { $script:owner='Prior'; $script:runtime=[ordered]@{process_alive=$true;listener=$true;mutex=$true;health=$true;companion_version=$script:companionVersion;pid=101;path=$script:memoryTask.Target;stable_polls=0;stop_invoked=$false} } }
 else { if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Companion executable missing' } }
 try {
     Set-Phase 'query' 21; if (-not $DryRun) { $scheduler = New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $script:taskFolder = $scheduler.GetFolder('\') }
     if ($Action -eq 'Query') { $task = Get-OwnedTask; Set-Phase 'success' 0; Save-Phase; if ($DryRun) { Write-DryResult '' } elseif ($task) { $task.Xml }; exit 0 }
-    if ($Action -eq 'UninstallTask') { $task = Get-OwnedTask; Set-Phase 'stop' 22; Stop-Owner 'Prior'; if ($task) { Set-Phase 'task_remove' 26; Remove-OwnedTask }; Set-Phase 'success' 0; Save-Phase; if ($DryRun) { Write-DryResult '' }; exit 0 }
-    $prior = Get-OwnedTask; if ($prior -and $prior.Status -notin @('Running','Ready','Disabled')) { throw 'Unsupported prior task status' }; if ($prior -and $prior.Status -eq 'Running') { Set-Phase 'stop' 22; Stop-Owner 'Prior' }
-    $candidate = $false
+    if ($Action -eq 'UninstallTask') { $task = Get-OwnedTask; if ($task) { [void](Repair-TaskDacl $task) }; Set-Phase 'stop' 22; Stop-Owner 'Prior'; if ($task) { Set-Phase 'task_remove' 26; Remove-OwnedTask }; Set-Phase 'success' 0; Save-Phase; if ($DryRun) { Write-DryResult '' }; exit 0 }
+    $prior = Get-OwnedTask; if ($prior -and $prior.Status -notin @('Running','Ready','Disabled')) { throw 'Unsupported prior task status' }; if ($prior) { [void](Repair-TaskDacl $prior) }; if ($prior -and $prior.Status -eq 'Running') { Set-Phase 'stop' 22; Stop-Owner 'Prior' }
+    $candidate = $false; $registrationAttempted = $false
     try {
         Set-Phase 'dacl_create' 20; if ($DryRun -and (Test-Failure 'Dacl')) { throw 'Dacl failed' }; if (-not $DryRun -or $DisposableDaclTest) { foreach ($name in ('config','logs','cache','diagnostics')) { New-Item -ItemType Directory -Path (Join-Path $DataRoot $name) -Force | Out-Null }; $script:daclStats=Set-ExactTreeAcl }; if($DisposableDaclTest){Set-Phase 'success' 0; Write-DryResult ''; exit 0}
-        Set-Phase 'task_register' 23; Set-OwnedTask $xml $exe 'Ready' 'Create'; $candidate = $true; Set-Phase 'start' 24; if ($DryRun -and (Test-Failure 'Start')) { throw 'Start failed' }; Start-Candidate; Set-Phase 'health' 25; if (-not (Test-CandidateHealth)) { throw 'Candidate health gate failed' }
+        Set-Phase 'task_register' 23; $registrationAttempted = $true; Set-OwnedTask $xml $exe 'Ready' 'Create' (-not $prior); $candidate = $true; Set-Phase 'start' 24; if ($DryRun -and (Test-Failure 'Start')) { throw 'Start failed' }; Start-Candidate; Set-Phase 'health' 25; if (-not (Test-CandidateHealth)) { throw 'Candidate health gate failed' }
     } catch {
         $primary=$_.Exception.Message; $primaryPhase=$script:phase; $primaryCode=$script:exitCode; $rollbackPhase=''; $rollbackCode=0
         if ($candidate) { if ($script:candidateStarted) { Set-Phase 'rollback_stop' 30; try { Stop-Owner 'Candidate' } catch { $script:rollbackErrors += $_.Exception.Message; $rollbackPhase=$script:phase; $rollbackCode=$script:exitCode } }; Set-Phase 'rollback_remove' 31; try { Remove-OwnedTask } catch { $script:rollbackErrors += $_.Exception.Message; if(-not $rollbackCode){$rollbackPhase=$script:phase;$rollbackCode=$script:exitCode} } }
-        if ($prior) { Set-Phase 'rollback_restore' 32; try { Set-OwnedTask $prior.Xml $prior.Target $prior.Status 'Restore'; if ($prior.Status -eq 'Running') { if ($script:owner -eq 'Candidate') { throw 'Prior restart blocked by candidate' }; Set-Phase 'rollback_restart' 33; Start-Prior } else { $restored = Get-OwnedTask; if ($restored.Status -ne $prior.Status) { throw 'Prior status restoration failed' } } } catch { $script:rollbackErrors += $_.Exception.Message; if(-not $rollbackCode){$rollbackPhase=$script:phase;$rollbackCode=$script:exitCode} } }
+        # Preserve a repaired DACL during rollback so the legacy task remains recoverable.
+        if ($prior -and $registrationAttempted) { Set-Phase 'rollback_restore' 32; try { Set-OwnedTask $prior.Xml $prior.Target $prior.Status 'Restore'; if ($prior.Status -eq 'Running') { if ($script:owner -eq 'Candidate') { throw 'Prior restart blocked by candidate' }; Set-Phase 'rollback_restart' 33; Start-Prior } else { $restored = Get-OwnedTask; if ($restored.Status -ne $prior.Status) { throw 'Prior status restoration failed' } } } catch { $script:rollbackErrors += $_.Exception.Message; if(-not $rollbackCode){$rollbackPhase=$script:phase;$rollbackCode=$script:exitCode} } }
         $script:rollback = if($script:rollbackErrors.Count){'incomplete'}else{'complete'}; if($rollbackCode){Set-Phase $rollbackPhase $rollbackCode}else{Set-Phase $primaryPhase $primaryCode}; throw "$primary; rollback $script:rollback"
     }
     Set-Phase 'success' 0; Save-Phase; if ($DryRun) { Write-DryResult '' }

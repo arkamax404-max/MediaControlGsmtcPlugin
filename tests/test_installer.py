@@ -57,22 +57,22 @@ class InstallerContractTests(unittest.TestCase):
         support = load_support()
         files = ["_internal/licenses/z.txt", "GSMTCD200Companion.exe",
                  "_internal/build-dependencies.json", "_internal/a.dll"]
-        include = support.generate_include(files, "1.2.2")
-        self.assertEqual(include, support.generate_include(reversed(files), "1.2.2"))
+        include = support.generate_include(files, "1.2.3")
+        self.assertEqual(include, support.generate_include(reversed(files), "1.2.3"))
         self.assertLess(include.index("a.dll"), include.index("licenses\\z.txt"))
         for forbidden in ("plugin", "node_modules", "tests", "openspec", ".."):
             self.assertNotIn(forbidden, include.lower())
         for required in ("build-dependencies.json", "licenses\\z.txt",
                           "GSMTCD200Companion.exe"):
             self.assertIn(required, include)
-        self.assertIn(r"{app}\versions\1.2.2\bridge", include)
+        self.assertIn(r"{app}\versions\1.2.3\bridge", include)
 
     def test_receipt_contains_only_hashes_versions_and_counts(self):
         support = load_support()
         snapshot = {"sha256": "d" * 64, "files": [{"path": "companion.iss", "sha256": "e" * 64}]}
         bundle = {"tree_sha256": "b" * 64, "file_count": 85, "total_size": 22500387,
                   "files": [{"path": "GSMTCD200Companion.exe", "sha256": "c" * 64}]}
-        receipt = support.build_receipt("482f680", snapshot, "1.2.2", "7.1.0", "a" * 64, 123, bundle, bundle)
+        receipt = support.build_receipt("482f680", snapshot, "1.2.3", "7.1.0", "a" * 64, 123, bundle, bundle)
         encoded = json.dumps(receipt, sort_keys=True)
         self.assertNotRegex(encoded, r"[A-Za-z]:\\|/Users/|\\\\")
         self.assertEqual(receipt["source_bundle_tree_sha256"], "b" * 64)
@@ -81,12 +81,12 @@ class InstallerContractTests(unittest.TestCase):
         self.assertEqual(receipt["snapshot_bundle_exe_sha256"], "c" * 64)
         self.assertEqual(receipt["installer_size"], 123)
         self.assertEqual(receipt["companion_source_commit"], "482f680")
-        self.assertEqual(receipt["app_version"], "1.2.2")
+        self.assertEqual(receipt["app_version"], "1.2.3")
         self.assertNotIn("source_commit", receipt)
 
     def test_version_source_drives_installer_contract(self):
         support = load_support()
-        self.assertEqual(support.companion_version(ROOT), "1.2.2")
+        self.assertEqual(support.companion_version(ROOT), "1.2.3")
         with self.assertRaises(ValueError): support.generate_include(["GSMTCD200Companion.exe"], "1.2")
         inno = INSTALLER.joinpath("companion.iss").read_text("utf-8")
         build = INSTALLER.joinpath("build_installer.ps1").read_text("utf-8")
@@ -161,7 +161,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_manage_helper_dry_run_task_acl_and_exact_removal(self):
         script = INSTALLER / "manage_companion.ps1"
         local = "C:\\Synthetic User\\Local"
-        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge"
+        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.3\\bridge"
         data = local + "\\GSMTCD200Controller"
         common = ["pwsh", "-NoProfile", "-File", str(script), "-DryRun",
                   "-LocalAppDataRoot", local, "-VersionRoot", version,
@@ -172,7 +172,7 @@ class InstallerContractTests(unittest.TestCase):
         xml = plan["task_xml"]
         for value in ("<Delay>PT10S</Delay>", "<LogonType>InteractiveToken</LogonType>",
                       "<RunLevel>LeastPrivilege</RunLevel>", "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
-                      "<Interval>PT30S</Interval>", "<Count>3</Count>",
+            "<Interval>PT1M</Interval>", "<Count>3</Count>",
                       "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", "<StartWhenAvailable>true</StartWhenAvailable>"):
             self.assertIn(value, xml)
         self.assertIn("GSMTCD200Companion.exe", xml)
@@ -185,13 +185,19 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("<URI>GSMTCD200Controller-Companion</URI>", xml)
         self.assertEqual((plan["phase"], plan["exit_code"]), ("success", 0))
         self.assertEqual((plan["runtime"]["process_alive"], plan["runtime"]["listener"], plan["runtime"]["mutex"], plan["runtime"]["health"]), (True, True, True, True))
-        self.assertEqual(plan["runtime"]["companion_version"], "1.2.2")
+        self.assertEqual(plan["runtime"]["companion_version"], "1.2.3")
         self.assertEqual((plan["runtime"]["pid"], plan["runtime"]["path"]), (202, version + "\\GSMTCD200Companion.exe"))
+        expected_task_dacl = "D:P(A;;0x001301BF;;;S-1-5-21-1-2-1000)(A;;FA;;;SY)(A;;FA;;;BA)"
+        self.assertEqual(plan["task_registrations"], [{"flags": 0x16, "sddl": expected_task_dacl, "initial": True}])
+        self.assertEqual(plan["task"]["owner"], "S-1-5-21-1-2-1000")
+        self.assertEqual(plan["task"]["dacl"], expected_task_dacl.replace("0x001301BF", "0x1301bf"))
         removal = subprocess.run(common + ["-Action", "UninstallTask"], capture_output=True,
                                  text=True, timeout=10, check=True)
         self.assertEqual(json.loads(removal.stdout)["operation"], "delete_exact_task")
         source = script.read_text("utf-8")
         self.assertIn("Schedule.Service", source); self.assertNotIn("schtasks", source.lower())
+        self.assertIn("RegisterTask($TaskName, $Xml, 0x16, $CurrentUserSid, $null, 3, $sddl)", source)
+        self.assertIn("SetSecurityDescriptor($script:taskDacl, 0)", source)
         self.assertIn("OwningProcess", source); self.assertIn("Get-Process -Id", source)
         self.assertIn("candidateProcess.WaitForExit", source); self.assertIn("candidatePid", source)
         self.assertNotIn("Stop-Process", source); self.assertNotIn("taskkill", source.lower())
@@ -201,6 +207,37 @@ class InstallerContractTests(unittest.TestCase):
         for point in ("QueryAccess", "QueryService"):
             result = subprocess.run(common + ["-Action", "Query", "-FailurePoints", point], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 21); self.assertEqual(json.loads(result.stdout)["phase"], "query")
+
+        legacy_xml = '<Task><Actions><Exec><Command>C:\\Prior\\Companion.exe</Command></Exec></Actions></Task>'
+        repaired = subprocess.run(common + ["-Action", "Install", "-PriorTaskXml", legacy_xml],
+                                 capture_output=True, text=True, timeout=10, check=True)
+        repaired_plan = json.loads(repaired.stdout)
+        self.assertTrue(repaired_plan["task_acl_repaired"])
+        self.assertEqual(repaired_plan["task"]["dacl"], expected_task_dacl.replace("0x001301BF", "0x1301bf"))
+        self.assertEqual([call["sddl"] for call in repaired_plan["task_registrations"]], [None])
+        self.assertTrue(all(call["flags"] == 0x16 for call in repaired_plan["task_registrations"]))
+
+        denied = subprocess.run(common + ["-Action", "Install", "-PriorTaskXml", legacy_xml,
+                                           "-FailurePoints", "TaskAclRepair"],
+                                capture_output=True, text=True, timeout=10)
+        denied_plan = json.loads(denied.stdout)
+        self.assertEqual((denied.returncode, denied_plan["phase"], denied_plan["exit_code"]), (27, "task_acl_repair", 27))
+        self.assertEqual(denied_plan["task_registrations"], [])
+        self.assertIn("delete only the named task as administrator, then rerun the installer", denied_plan["error"])
+
+        rolled_back = subprocess.run(common + ["-Action", "Install", "-PriorTaskXml", legacy_xml,
+                                                "-FailurePoints", "Start"],
+                                      capture_output=True, text=True, timeout=10)
+        rollback_plan = json.loads(rolled_back.stdout)
+        self.assertEqual((rolled_back.returncode, rollback_plan["rollback"]), (24, "complete"))
+        self.assertTrue(rollback_plan["task_acl_repaired"])
+        self.assertEqual((rollback_plan["task"]["target"], rollback_plan["task"]["dacl"]),
+                         ("C:\\Prior\\Companion.exe", expected_task_dacl.replace("0x001301BF", "0x1301bf")))
+        integration = (ROOT / "tests/task_scheduler_dacl_integration.ps1").read_text("utf-8")
+        self.assertIn("GSMTCD200Controller-DaclProbe-$PID", integration)
+        self.assertIn("<Enabled>false</Enabled>", integration)
+        self.assertIn("RegisterTask($name, $xml, 0x16, $CurrentUserSid, $null, 3, $targetDacl)", integration)
+        self.assertIn("finally", integration)
 
     def test_disposable_dacl_walk_is_unique_semantic_and_idempotent(self):
         script = INSTALLER / "manage_companion.ps1"
@@ -214,7 +251,7 @@ class InstallerContractTests(unittest.TestCase):
             local = Path(directory); data = local / "GSMTCD200Controller"
             for name in ("config", "logs/nested", "cache", "diagnostics"): (data / name).mkdir(parents=True, exist_ok=True)
             for name in ("config/bridge-token", "logs/nested/item.txt", "logs/held.log", "diagnostics/held.zip"): (data / name).write_bytes(b"held")
-            version = local / "Programs/GSMTCD200Controller/versions/1.2.2/bridge"
+            version = local / "Programs/GSMTCD200Controller/versions/1.2.3/bridge"
             command = command_for(local, data, version)
             with (data / "logs/held.log").open("ab"), (data / "diagnostics/held.zip").open("ab"):
                 first_run = subprocess.run(command, capture_output=True, text=True, timeout=15); self.assertEqual(first_run.returncode, 0, first_run.stderr + first_run.stdout)
@@ -235,7 +272,7 @@ class InstallerContractTests(unittest.TestCase):
         for failure, expected in diagnostics.items():
             with tempfile.TemporaryDirectory(prefix="GSMTC DACL diagnostic ") as directory:
                 local = Path(directory); data = local / "GSMTCD200Controller"; data.mkdir()
-                version = local / "Programs/GSMTCD200Controller/versions/1.2.2/bridge"
+                version = local / "Programs/GSMTCD200Controller/versions/1.2.3/bridge"
                 command = command_for(local, data, version, failure)
                 result = subprocess.run(command, capture_output=True, text=True, timeout=15); state = json.loads(result.stdout)
                 self.assertEqual((result.returncode, state["phase"], state["exit_code"]), (expected[1], *expected), failure)
@@ -243,7 +280,7 @@ class InstallerContractTests(unittest.TestCase):
 
     def test_shared_migration_state_machine_failure_table(self):
         script = INSTALLER / "manage_companion.ps1"; local = "C:\\Synthetic User\\Local"
-        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge"; data = local + "\\GSMTCD200Controller"
+        version = local + "\\Programs\\GSMTCD200Controller\\versions\\1.2.3\\bridge"; data = local + "\\GSMTCD200Controller"
         prior_target = "C:\\Prior\\Companion.exe"
         prior_xml = f'<Task><Actions><Exec><Command>{prior_target}</Command></Exec></Actions></Task>'
         base = ["pwsh", "-NoProfile", "-File", str(script), "-DryRun", "-Action", "Install",
@@ -288,12 +325,12 @@ class InstallerContractTests(unittest.TestCase):
         script = INSTALLER / "manage_companion.ps1"
         base = ["pwsh", "-NoProfile", "-File", str(script), "-DryRun", "-Action", "Query",
                 "-LocalAppDataRoot", "C:\\Local", "-VersionRoot",
-                "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge",
+            "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.3\\bridge",
                 "-DataRoot", "C:\\Local\\GSMTCD200Controller", "-CurrentUserSid", "S-1-5-21-1-2-1000"]
         for extra in (["-TaskName", "*"], ["-DataRoot", "C:\\Other"],
                       ["-VersionRoot", "C:\\Windows"],
                       ["-VersionRoot", "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2\\bridge"],
-                      ["-VersionRoot", "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.2\\bridge\\..\\bridge"]):
+        ["-VersionRoot", "C:\\Local\\Programs\\GSMTCD200Controller\\versions\\1.2.3\\bridge\\..\\bridge"]):
             result = subprocess.run(base + extra, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
         invalid_sid = subprocess.run(base[:-1] + ["not-a-sid"], capture_output=True, text=True, timeout=10)

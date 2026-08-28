@@ -118,26 +118,27 @@ def build_zip(entries):
 
 def _collect_runtime(http_get, token_loader, paths, health_status, health_reason):
     if health_status not in {"ready", "degraded"}:
-        return {"online": False, "reason": health_reason}
+        return {"companion_version": COMPANION_VERSION, "online": False, "reason": health_reason}
     try:
         token = validate_token(token_loader(paths))
     except (OSError, RuntimeError, ValueError, UnicodeError):
-        return {"online": False, "reason": "token_unavailable"}
+        return {"companion_version": COMPANION_VERSION, "online": False, "reason": "token_unavailable"}
     try:
         status, body = http_get(f"http://{BRIDGE_HOST}:{BRIDGE_PORT}/state",
             {"Authorization": f"Bearer {token}"}, HTTP_TIMEOUT)
         if status != 200 or len(body) > MAX_HTTP_BYTES:
-            return {"online": False, "reason": "state_unavailable"}
+            return {"companion_version": COMPANION_VERSION, "online": False, "reason": "state_unavailable"}
         payload = json.loads(body)
         if not isinstance(payload, dict):
             raise ValueError
-        return {"online": True, "available": payload.get("available") is True,
+        return {"companion_version": COMPANION_VERSION, "online": True,
+            "available": payload.get("available") is True,
             "timeline_available": payload.get("timeline_available") is True,
             "audio_available": payload.get("audio_available") is True,
             "artwork_id_present": isinstance(payload.get("artwork_id"), str)
                 and bool(payload["artwork_id"]), "payload_size": len(body)}
     except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
-        return {"online": False, "reason": "state_unavailable"}
+        return {"companion_version": COMPANION_VERSION, "online": False, "reason": "state_unavailable"}
 
 
 def create_diagnostics(paths=None, clock=None, http_get=None, token_loader=None,

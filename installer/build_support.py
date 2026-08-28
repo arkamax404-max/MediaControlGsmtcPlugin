@@ -1,8 +1,8 @@
 import argparse, hashlib, json, re, shutil, stat, subprocess
 from pathlib import Path, PurePosixPath
 
-TREE_HASH = "cce9ea14b4abb293ab7415cede938905486314f9d506b37d5b76b8ce0277aa5a"
-EXE_HASH = "690ded35d54de680f1977c740889b579a381e755b6da14ff7b88564d803bbcbf"
+TREE_HASH = "78a5a8537bc4183a3461d3894c955b76e47a5268ca721282ccfe117a41556dcb"
+EXE_HASH = "b851211d2617566375189cda1e41bbe4ce489fcb6efbe2cd6b0e9ce2917784d3"
 LOCAL = re.compile(r'^[A-Z]:\\[^\x00-\x1f\\/:*?"<>|]+(?:\\[^\x00-\x1f\\/:*?"<>|]+)*$')
 VERSION = re.compile(r'^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$')
 

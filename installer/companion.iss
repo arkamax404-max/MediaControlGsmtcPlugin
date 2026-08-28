@@ -69,6 +69,7 @@ begin
      (Result <> 'dacl_compare') and (Result <> 'dacl_apply') and (Result <> 'dacl_verify') and
      (Result <> 'dacl_enumerate') and (Result <> 'query') and
      (Result <> 'stop') and (Result <> 'task_register') and (Result <> 'task_remove') and
+      (Result <> 'task_acl_repair') and
      (Result <> 'start') and (Result <> 'health') and (Result <> 'rollback_stop') and
      (Result <> 'rollback_remove') and (Result <> 'rollback_restore') and
      (Result <> 'rollback_restart') then Result := 'unavailable';
@@ -89,7 +90,10 @@ begin
     if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then begin
       Phase := ReadHelperPhase(StatusPath); Log(Format('Companion helper failed: phase=%s exit=%d', [Phase, ResultCode]));
       SetupExitCode := 1603;
-      RaiseException(Format('Companion activation failed: %s (%d). Files and the uninstall entry may remain for cleanup.', [Phase, ResultCode]));
+      if Phase = 'task_acl_repair' then
+        RaiseException('Companion activation could not repair the legacy task ACL. Open Task Scheduler as administrator, delete only \GSMTCD200Controller-Companion, then rerun this installer.')
+      else
+        RaiseException(Format('Companion activation failed: %s (%d). Files and the uninstall entry may remain for cleanup.', [Phase, ResultCode]));
     end;
     DeleteFile(StatusPath);
   end;
