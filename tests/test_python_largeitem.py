@@ -128,6 +128,7 @@ class LargeItemRendererTests(unittest.TestCase):
                    if node.text == "Visible Artist"]
         self.assertEqual(len(artists), 1)
         self.assertEqual(artists[0].attrib.get("font-size"), "22")
+        self.assertEqual(artists[0].attrib.get("font-weight"), "700")
 
 
 class LargeItemActionModelTests(unittest.TestCase):

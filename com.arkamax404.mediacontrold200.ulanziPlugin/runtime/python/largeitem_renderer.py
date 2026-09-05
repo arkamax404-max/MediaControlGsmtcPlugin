@@ -91,7 +91,7 @@ def render_largeitem(view: LargeItemView) -> str:
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{background}"/>'
         f'{artwork}{playback}{title_nodes}'
         f'<text x="{text_x}" y="{artist_y}" fill="{secondary}" '
-        f'font-family="Arial, sans-serif" font-size="22"'
+        f'font-family="Arial, sans-serif" font-size="22" font-weight="700"'
         f'{_text_constraint(artist_line, text_width, 22)}>{_xml(artist_line)}</text>'
         f'{progress}</svg>'
     )

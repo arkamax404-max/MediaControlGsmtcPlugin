@@ -183,7 +183,7 @@ def render_mute_toggle_svg(label: str, waves: bool) -> str:
              'd="m64 39 22 22m0-22L64 61"/>')
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">'
             '<rect width="196" height="196" rx="35.28" fill="#121212"/>'
-            f'<text x="98" y="44" fill="#ffffff" font-family="Arial, sans-serif" font-size="38" '
+            f'<text x="98" y="38" fill="#ffffff" font-family="Arial, sans-serif" font-size="38" '
             f'font-weight="700" text-anchor="middle">{escape(label, quote=True)}</text>'
             '<g transform="translate(-5 -2) scale(2)">'
             f'<path fill="#1db954" d="M17 42h15l19-16v48L32 58H17z"/>{glyph}</g></svg>')

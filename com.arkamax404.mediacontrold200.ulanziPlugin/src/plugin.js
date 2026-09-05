@@ -422,7 +422,7 @@ export function renderLargeItemSvg(state, bundle, settings = {}, now = Date.now(
   return `<svg xmlns="http://www.w3.org/2000/svg" width="458" height="196" viewBox="0 0 458 196">`
     + `<rect width="458" height="196" fill="${safe.backgroundColor}"/>${artwork}${playback}`
     + titleLines.map((line, index) => `<text x="${x}" y="${54 + index * 30}" fill="${safe.primaryColor}" font-family="Arial, sans-serif" font-size="25" font-weight="700"${largeItemTextConstraint(line, width - (ready ? 42 : 0), 25)}>${escapeXml(line)}</text>`).join("")
-    + `<text x="${x}" y="${titleLines.length === 2 ? 118 : 94}" fill="${safe.secondaryColor}" font-family="Arial, sans-serif" font-size="22"${largeItemTextConstraint(artistLine, width, 22)}>${escapeXml(artistLine)}</text>`
+    + `<text x="${x}" y="${titleLines.length === 2 ? 118 : 94}" fill="${safe.secondaryColor}" font-family="Arial, sans-serif" font-size="22" font-weight="700"${largeItemTextConstraint(artistLine, width, 22)}>${escapeXml(artistLine)}</text>`
     + `${progress}</svg>`;
 }
 
