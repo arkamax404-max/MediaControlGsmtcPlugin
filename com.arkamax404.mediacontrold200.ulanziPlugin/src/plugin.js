@@ -412,8 +412,8 @@ export function renderLargeItemSvg(state, bundle, settings = {}, now = Date.now(
     + (state.isPlaying ? `<path d="M424 19l14 9-14 9z" fill="#FFFFFF"/>`
       : `<path d="M423 19h5v18h-5zm10 0h5v18h-5z" fill="#FFFFFF"/>`) : "";
   const times = state?.timelineAvailable
-    ? `${safe.showElapsed ? `<text x="${x}" y="158" fill="${safe.secondaryColor}" font-size="13">${formatProgressTime("elapsed", position, state.durationSeconds)}</text>` : ""}`
-      + `${safe.showRemaining ? `<text x="${x + width}" y="158" fill="${safe.secondaryColor}" font-size="13" text-anchor="end">${formatProgressTime("remaining", position, state.durationSeconds)}</text>` : ""}`
+    ? `${safe.showElapsed ? `<text x="${x}" y="158" fill="${safe.secondaryColor}" font-family="Arial, sans-serif" font-size="18" font-weight="700">${formatProgressTime("elapsed", position, state.durationSeconds)}</text>` : ""}`
+      + `${safe.showRemaining ? `<text x="${x + width}" y="158" fill="${safe.secondaryColor}" font-family="Arial, sans-serif" font-size="18" font-weight="700" text-anchor="end">${formatProgressTime("remaining", position, state.durationSeconds)}</text>` : ""}`
     : "";
   const progress = safe.showProgress && ready
     ? `${times}<rect x="${x}" y="170" width="${width}" height="8" rx="4" fill="${safe.secondaryColor}" opacity="0.35"/>`

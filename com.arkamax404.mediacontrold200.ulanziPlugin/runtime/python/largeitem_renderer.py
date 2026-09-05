@@ -142,7 +142,7 @@ def _progress(view: LargeItemView, x: int, width: int, secondary: str, accent: s
         labels.append((x + width, "end", _safe_text(view.remaining_text)))
     times = "".join(
         f'<text x="{position}" y="158" fill="{secondary}" font-family="Arial, sans-serif" '
-        f'font-size="13" text-anchor="{anchor}">{_xml(label)}</text>'
+        f'font-size="18" font-weight="700" text-anchor="{anchor}">{_xml(label)}</text>'
         for position, anchor, label in labels if label
     )
     return (

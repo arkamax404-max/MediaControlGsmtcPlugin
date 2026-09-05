@@ -99,9 +99,13 @@ class LargeItemRendererTests(unittest.TestCase):
     def test_progress_clamps_and_optional_labels_obey_settings(self):
         settings = LargeItemSettings(show_elapsed=True, show_remaining=False)
         svg = render_largeitem(view(progress_ratio=2, settings=settings))
+        root = ET.fromstring(svg)
         self.assertIn('width="246" height="8"', svg)
         self.assertIn("0:30", svg)
         self.assertNotIn("-1:30", svg)
+        elapsed = next(node for node in root.findall("{*}text") if node.text == "0:30")
+        self.assertEqual(elapsed.attrib.get("font-size"), "18")
+        self.assertEqual(elapsed.attrib.get("font-weight"), "700")
         hidden = render_largeitem(view(settings=LargeItemSettings(show_progress=False)))
         self.assertNotIn('y="170"', hidden)
 
