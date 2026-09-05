@@ -3,6 +3,7 @@ import json
 import sys
 import threading
 import time
+import tempfile
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
@@ -30,6 +31,9 @@ def inspect_sdk():
                                     TOGGLE_UUID, TRANSPORT_DISPLAY,
                                     NowPlayingActionModel, mute_toggle_data_uri)
     from progress_action import ACTION_UUID, ProgressActionModel
+    from largeitem_action import ACTION_UUID as LARGEITEM_ACTION_UUID
+    from setup_action import (ACTION_UUID as SETUP_ACTION_UUID, BUILTIN_UUID,
+                              SetupActionController)
     from progress_scheduler import ProgressScheduler, register_progress_handlers
     from transport_actions import TransportRouter, register_transport_handlers
 
@@ -103,8 +107,28 @@ def inspect_sdk():
 
     probe_client = ProbeClient()
     router = TransportRouter(client=probe_client)
+    setup_temp = tempfile.TemporaryDirectory()
+    setup_root = Path(setup_temp.name)
+    setup_package = setup_root / "10000000-0000-4000-8000-000000000000.ulanziProfile"
+    setup_page = setup_package / "Profiles" / "20000000-0000-4000-8000-000000000000"
+    setup_page.mkdir(parents=True)
+    (setup_package / "manifest.json").write_text(json.dumps({
+        "Device": {"Model": "D200", "UUID": "device"}, "Name": "SDK Probe",
+        "Pages": {"Current": setup_page.name, "Pages": [setup_page.name]},
+    }), "utf-8")
+    setup_action_id = "30000000-0000-4000-8000-000000000000"
+    (setup_page / "manifest.json").write_text(json.dumps({
+        "Controllers": [{"Actions": {}}, {"Actions": {
+            "1_1": {"Action": SETUP_ACTION_UUID, "ActionID": setup_action_id},
+            "3_2": {"Action": BUILTIN_UUID,
+                    "ActionID": "40000000-0000-4000-8000-000000000000"},
+        }}],
+    }), "utf-8")
+    setup_controller = SetupActionController(api, lambda: setup_root,
+                                             assistant_launcher=None)
     scheduler = ProgressScheduler(api, probe_client, ProgressActionModel(),
-                                  NowPlayingActionModel(), ArtworkBundleCache())
+                                  NowPlayingActionModel(), ArtworkBundleCache(),
+                                  setup_controller=setup_controller)
     router.configure_runtime(scheduler.handle_run, scheduler.request_poll,
                              scheduler.now_playing_model.audio_target_from_event)
     router.start()
@@ -132,6 +156,8 @@ def inspect_sdk():
     api.emit("add", {"uuid": ACTION_UUID, "context": context, "param": {}})
     now_context = "now-uuid___now-key___now-action"
     api.emit("add", {"uuid": NOW_PLAYING_UUID, "context": now_context})
+    large_context = f"{LARGEITEM_ACTION_UUID}___3_2___large-action"
+    api.emit("add", {"uuid": LARGEITEM_ACTION_UUID, "context": large_context})
     mosaic_contexts = []
     for index, action in enumerate(MOSAIC_ACTIONS):
         mosaic_context = f"tile-{index}___tile-key-{index}___tile-action-{index}"
@@ -169,10 +195,21 @@ def inspect_sdk():
         raise RuntimeError(f"Integrated inspector response is missing: {socket.messages}")
     settings_messages = [item for item in socket.messages if item[1].get("cmd") == "setSettings"]
     display_messages = [item for item in socket.messages if item[1].get("cmd") == "state"]
-    if len(settings_messages) != 1 or not display_messages:
+    if len(settings_messages) != 2 or not display_messages:
         raise RuntimeError(f"Integrated settings/display sends are missing: {socket.messages}")
-    settings_thread_id, settings_payload = settings_messages[0]
-    display_thread_id, display_payload = display_messages[0]
+    progress_settings = [item for item in settings_messages
+                         if item[1].get("uuid") == "context-uuid"]
+    large_settings = [item for item in settings_messages
+                      if item[1].get("uuid") == LARGEITEM_ACTION_UUID]
+    if len(progress_settings) != 1 or len(large_settings) != 1:
+        raise RuntimeError(f"Integrated per-action settings sends are missing: {settings_messages}")
+    settings_thread_id, settings_payload = progress_settings[0]
+    progress_displays = [item for item in display_messages
+                         if item[1].get("param", {}).get("statelist", [{}])[0].get("uuid")
+                         == "context-uuid"]
+    if not progress_displays:
+        raise RuntimeError("Integrated progress display is missing")
+    display_thread_id, display_payload = progress_displays[0]
     state_item = display_payload.get("param", {}).get("statelist", [{}])[0]
     if (display_thread_id == threading.get_ident()
             or state_item.get("uuid") != "context-uuid"
@@ -181,6 +218,67 @@ def inspect_sdk():
             or state_item.get("type") != 1
             or not state_item.get("data", "").startswith("data:image/svg+xml;base64,")):
         raise RuntimeError(f"Unexpected integrated legacy SDK payload: {display_payload}")
+    large_items = [item for _, message in display_messages
+                   for item in message.get("param", {}).get("statelist", [])
+                   if item.get("uuid") == LARGEITEM_ACTION_UUID]
+    if not large_items:
+        raise RuntimeError("Integrated LargeItem display is missing")
+    large_item = large_items[-1]
+    try:
+        import base64
+        large_svg = base64.b64decode(large_item["data"].split(",", 1)[1]).decode("utf-8")
+    except Exception as exc:
+        raise RuntimeError("Integrated LargeItem payload is not a UTF-8 SVG data URI") from exc
+    if (large_item.get("key") != "3_2"
+            or large_item.get("actionid") != "large-action"
+            or large_item.get("type") != 1
+            or 'width="458" height="196" viewBox="0 0 458 196"' not in large_svg):
+        raise RuntimeError(f"Unexpected integrated LargeItem payload: {large_item}")
+    setup_context = f"{SETUP_ACTION_UUID}___1_1___{setup_action_id}"
+    api.emit("add", {"uuid": SETUP_ACTION_UUID, "context": setup_context})
+    setup_started = time.monotonic()
+    api.emit("run", {"uuid": SETUP_ACTION_UUID, "context": setup_context})
+    setup_callback_seconds = time.monotonic() - setup_started
+    if setup_callback_seconds >= 0.25:
+        raise RuntimeError(f"Setup callback blocked: {setup_callback_seconds:.6f}s")
+    deadline = time.monotonic() + 1
+    while not any(message.get("cmd") == "sendToPropertyInspector"
+                  and message.get("uuid") == SETUP_ACTION_UUID
+                  and message.get("payload", {}).get("setupStatus", {}).get("reason")
+                  == "Live page identity verified" for _, message in socket.messages) \
+            and time.monotonic() < deadline:
+        time.sleep(0.005)
+    api.emit("sendToPlugin", {"context": setup_context,
+                              "payload": {"type": "requestSetupStatus"}})
+    setup_inspectors = [message for _, message in socket.messages
+                        if message.get("cmd") == "sendToPropertyInspector"
+                        and message.get("uuid") == SETUP_ACTION_UUID]
+    if (not setup_inspectors
+            or setup_inspectors[-1].get("payload", {}).get("setupStatus") != {
+                "status": "Ready", "reason": "Live page identity verified",
+                "profileName": "SDK Probe",
+                "packageId": "10000000-0000-4000-8000-000000000000",
+                "profileId": "20000000-0000-4000-8000-000000000000",
+            }):
+        raise RuntimeError(f"Unexpected integrated Setup inspector payload: {setup_inspectors}")
+    setup_items = [item for _, message in socket.messages
+                   for item in message.get("param", {}).get("statelist", [])
+                   if item.get("uuid") == SETUP_ACTION_UUID]
+    if (len(setup_items) < 3
+            or any(item.get("key") != "1_1" or item.get("actionid") != setup_action_id
+                   or item.get("type") != 2
+                   or item.get("path") != "./assets/setup-large-display.svg"
+                   or item.get("textData") != "Ready" for item in setup_items)):
+        raise RuntimeError(f"Unexpected integrated Setup payloads: {setup_items}")
+    expected_large_settings = {
+        "showArtwork": True, "pausedArtwork": "grayscale", "showProgress": True,
+        "showElapsed": False, "showRemaining": True, "backgroundColor": "#0B0D10",
+        "primaryColor": "#FFFFFF", "secondaryColor": "#B8BEC8",
+        "accentColor": "#1DB954", "fit": "contain", "SmallViewMode": 2,
+    }
+    if (large_settings[0][1].get("key") != "3_2"
+            or large_settings[0][1].get("settings") != expected_large_settings):
+        raise RuntimeError(f"Unexpected integrated LargeItem settings: {large_settings[0][1]}")
     now_items = [item for _, message in display_messages
                  for item in message.get("param", {}).get("statelist", [])
                  if item.get("uuid") == "now-uuid"]
@@ -218,7 +316,7 @@ def inspect_sdk():
         raise RuntimeError(f"Unexpected integrated settings payload: {settings_payload}")
     api.emit("didReceiveSettings", {"context": context, "settings": expected_settings})
     time.sleep(0.05)
-    if len([item for item in socket.messages if item[1].get("cmd") == "setSettings"]) != 1:
+    if len([item for item in socket.messages if item[1].get("cmd") == "setSettings"]) != 2:
         raise RuntimeError("Canonical settings echo caused a persistence loop")
     started_at = time.monotonic()
     api.emit("run", {"uuid": "com.arkamax404.ulanzi.mediacontrol.previous"})
@@ -290,6 +388,7 @@ def inspect_sdk():
         raise RuntimeError("Transport worker did not stop")
     if not scheduler.stop(timeout=0.5):
         raise RuntimeError("Progress scheduler did not stop")
+    setup_temp.cleanup()
     result = {
         "sdk": version("ulanzistudio-plugin-sdk-python"),
         "websocket_client": version("websocket-client"),
@@ -300,9 +399,12 @@ def inspect_sdk():
         "handler_counts": handler_counts,
         "synthetic_commands": probe_client.commands,
         "callbacks_nonblocking": True,
+        "setup_callback_seconds": setup_callback_seconds,
         "mosaic_payloads": mosaic_payloads,
         "audio_payloads": audio_payloads,
         "transport_payloads": transport_payloads,
+        "largeitem_payload_bytes": len(large_item["data"].encode("ascii")),
+        "setup_payloads": setup_items,
         "worker_display_payload": display_payload,
         "worker_settings_payload": settings_payload,
     }

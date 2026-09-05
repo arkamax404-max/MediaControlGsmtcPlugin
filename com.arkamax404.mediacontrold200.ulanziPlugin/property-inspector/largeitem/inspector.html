@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Large Now Playing</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    body { margin: 0; padding: 14px; background: #1e1f22; color: #f5f5f5; }
+    form { display: grid; gap: 11px; }
+    label { display: grid; grid-template-columns: 132px minmax(90px, 1fr); gap: 8px; align-items: center; }
+    label.color { grid-template-columns: 100px 42px minmax(78px, 1fr); }
+    input, select { box-sizing: border-box; min-height: 30px; border: 1px solid #555; border-radius: 4px; background: #2b2d31; color: #fff; }
+    input[type="checkbox"] { justify-self: start; min-height: auto; }
+    input[type="color"] { width: 42px; padding: 2px; }
+    input[type="text"] { width: 100%; padding: 4px 7px; }
+    .hint { margin: 2px 0 0; color: #b5bac1; font-size: 12px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <form id="largeitem-settings" autocomplete="off">
+    <label>Show artwork <input type="checkbox" name="showArtwork" checked></label>
+    <label>Paused artwork <select name="pausedArtwork"><option value="grayscale">Grayscale</option><option value="color">Color</option></select></label>
+    <label>Artwork fit <select name="fit"><option value="contain">Contain</option><option value="cover">Cover</option></select></label>
+    <label>Show progress <input type="checkbox" name="showProgress" checked></label>
+    <label>Show elapsed <input type="checkbox" name="showElapsed"></label>
+    <label>Show remaining <input type="checkbox" name="showRemaining" checked></label>
+    <label class="color">Background <input type="color" name="backgroundColor" value="#0B0D10"><input type="text" name="backgroundColorHex" value="#0B0D10" maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="Background color HEX"></label>
+    <label class="color">Title <input type="color" name="primaryColor" value="#FFFFFF"><input type="text" name="primaryColorHex" value="#FFFFFF" maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="Title color HEX"></label>
+    <label class="color">Artist <input type="color" name="secondaryColor" value="#B8BEC8"><input type="text" name="secondaryColorHex" value="#B8BEC8" maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="Artist color HEX"></label>
+    <label class="color">Accent <input type="color" name="accentColor" value="#1DB954"><input type="text" name="accentColorHex" value="#1DB954" maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="Accent color HEX"></label>
+    <p class="hint">This action is assigned to the D200 center display through an imported managed profile.</p>
+  </form>
+  <script src="../../vendor/ulanzi-sdk/html/js/constants.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/eventEmitter.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/timers.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/utils.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/ulanziApi.js"></script>
+  <script type="module" src="inspector.js"></script>
+</body>
+</html>

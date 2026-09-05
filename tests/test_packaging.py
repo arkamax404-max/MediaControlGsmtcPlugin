@@ -84,13 +84,16 @@ class PackagingContractTests(unittest.TestCase):
                 [f"{prepared['UUID']}.{suffix}" for suffix in (
                     "nowplaying", "previous", "toggle", "next", "volume-up", "volume-down",
                     "mute-toggle", "progress", "artwork-top-left", "artwork-top-right",
-                    "artwork-bottom-left", "artwork-bottom-right")],
+                    "artwork-bottom-left", "artwork-bottom-right", "largeitem-nowplaying",
+                    "setup-large-display")],
             )
-            self.assertEqual(len(prepared["Actions"]), 12)
+            self.assertEqual(len(prepared["Actions"]), 14)
             self.assertEqual([action["Name"] for action in prepared["Actions"]], [
                 "Now Playing", "Previous", "Play/Pause", "Next", "Volume Up",
                 "Volume Down", "Mute Toggle", "Track Progress", "Artwork Top Left",
                 "Artwork Top Right", "Artwork Bottom Left", "Artwork Bottom Right",
+                "Large Now Playing",
+                "Setup Large Display",
             ])
             progress_index = next(
                 index for index, action in enumerate(prepared["Actions"])
@@ -104,9 +107,18 @@ class PackagingContractTests(unittest.TestCase):
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith((".volume-up", ".volume-down"))
             }
+            largeitem_index = next(
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith(".largeitem-nowplaying")
+            )
+            setup_index = next(
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith(".setup-large-display")
+            )
             self.assertTrue(all("PropertyInspectorPath" not in action
                                 for index, action in enumerate(prepared["Actions"])
-                                if index not in {progress_index, mute_index, *volume_indexes}))
+                                if index not in {progress_index, mute_index, largeitem_index, setup_index,
+                                                 *volume_indexes}))
             self.assertEqual(prepared["Actions"][progress_index]["PropertyInspectorPath"],
                              preparer.PROPERTY_INSPECTOR_FILES[0])
             self.assertEqual(prepared["Actions"][mute_index]["PropertyInspectorPath"],
@@ -114,6 +126,14 @@ class PackagingContractTests(unittest.TestCase):
             self.assertEqual(
                 {prepared["Actions"][index]["PropertyInspectorPath"] for index in volume_indexes},
                 set(preparer.PROPERTY_INSPECTOR_FILES[4:6]),
+            )
+            self.assertEqual(
+                prepared["Actions"][largeitem_index]["PropertyInspectorPath"],
+                preparer.PROPERTY_INSPECTOR_FILES[6],
+            )
+            self.assertEqual(
+                prepared["Actions"][setup_index]["PropertyInspectorPath"],
+                preparer.PROPERTY_INSPECTOR_FILES[8],
             )
             referenced_assets = {
                 prepared["Icon"],
@@ -138,7 +158,8 @@ class PackagingContractTests(unittest.TestCase):
                 "assets/volume-up.svg", "assets/volume-down.svg", "assets/mute.svg",
                 "assets/unmute.svg", "assets/progress.svg", "assets/artwork-top-left.svg",
                 "assets/artwork-top-right.svg", "assets/artwork-bottom-left.svg",
-                "assets/artwork-bottom-right.svg",
+                "assets/artwork-bottom-right.svg", "assets/largeitem-nowplaying.svg",
+                "assets/setup-large-display.svg",
             })
             self.assertEqual((plugin / "manifest.json").read_bytes(), manifest_before)
             self.assertEqual((plugin / "package.json").read_bytes(), package_before)
@@ -172,8 +193,12 @@ class PackagingContractTests(unittest.TestCase):
                                              preparer.PROPERTY_INSPECTOR_FILES[3]),
                                             (preparer.PROPERTY_INSPECTOR_FILES[4],
                                              preparer.PROPERTY_INSPECTOR_FILES[3]),
-                                            (preparer.PROPERTY_INSPECTOR_FILES[5],
-                                             preparer.PROPERTY_INSPECTOR_FILES[3])):
+                                             (preparer.PROPERTY_INSPECTOR_FILES[5],
+                                              preparer.PROPERTY_INSPECTOR_FILES[3]),
+                                             (preparer.PROPERTY_INSPECTOR_FILES[6],
+                                              preparer.PROPERTY_INSPECTOR_FILES[7]),
+                                             (preparer.PROPERTY_INSPECTOR_FILES[8],
+                                              preparer.PROPERTY_INSPECTOR_FILES[9])):
                 html = (target / html_name).read_text("utf-8")
                 sources = re.findall(r'<script(?:\s+type="module")?\s+src="([^"]+)"', html)
                 parent = Path(html_name).parent

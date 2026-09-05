@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -109,6 +110,21 @@ class UlanziRuntimeTests(unittest.TestCase):
         self.assertEqual((parsed.address, parsed.port, parsed.language), ("10.0.0.2", "3906", "en"))
         self.assertEqual(parsed.raw, ("10.0.0.2",))
 
+    def test_profile_assistant_dispatch_preserves_exact_request_argument(self):
+        calls = []
+        fake = types.SimpleNamespace(profile_assistant_main=lambda argv: calls.append(argv) or 17)
+        previous = sys.modules.get("profile_assistant")
+        sys.modules["profile_assistant"] = fake
+        try:
+            self.assertEqual(self.runtime_module.main(
+                ["--profile-assistant", r"C:\\Requests\\one.json"]), 17)
+        finally:
+            if previous is None:
+                sys.modules.pop("profile_assistant", None)
+            else:
+                sys.modules["profile_assistant"] = previous
+        self.assertEqual(calls, [[r"C:\\Requests\\one.json"]])
+
     def test_websocket_close_stops_runtime_once(self):
         api = FakeApi()
         runtime = self.runtime_module.Runtime(lambda: api)
@@ -146,6 +162,8 @@ class UlanziRuntimeTests(unittest.TestCase):
         self.assertIs(runtime.progress_scheduler.client, runtime.router.client)
         self.assertIs(runtime.progress_scheduler.model, runtime.progress_model)
         self.assertIs(runtime.progress_scheduler.now_playing_model, runtime.now_playing_model)
+        self.assertIs(runtime.progress_scheduler.largeitem_model, runtime.largeitem_model)
+        self.assertIs(runtime.progress_scheduler.setup_controller, runtime.setup_controller)
         self.assertIs(runtime.progress_scheduler.artwork_cache, runtime.artwork_cache)
         self.assertEqual({name: len(items) for name, items in api.listeners.items()}, {
             "add": 1, "run": 1, "clear": 1, "setactive": 1,

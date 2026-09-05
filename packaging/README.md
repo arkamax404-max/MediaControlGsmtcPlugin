@@ -71,12 +71,24 @@ to `src/launcher.js`.
 The resulting external
 `package\com.arkamax404.mediacontrold200.ulanziPlugin` is the release artifact: it is
 what ships to users through the Ulanzi Community Store and the GitHub release ZIP.
-Its manifest exposes exactly twelve Python actions: Now Playing, Previous,
+Its manifest exposes exactly fourteen Python actions: Now Playing, Large Now Playing, Previous,
 Play/Pause, Next, Volume Up, Volume Down, Mute Toggle, Track Progress, and the
-four artwork mosaic actions. The package includes the explicit music and offline
+four artwork mosaic actions, and Setup Large Display. The package includes the explicit music and offline
 fallbacks, every transport/audio asset, the four artwork tile icons, and the
-progress icon, progress and audio-source inspectors, and five shared browser SDK scripts.
-All twelve actions use the existing authenticated loopback bridge.
+progress and LargeItem icons, progress, LargeItem, and audio-source inspectors, and five
+shared browser SDK scripts.
+The thirteen media actions use the existing authenticated loopback bridge. Setup Large Display
+can install, repair, or restore the center action in Studio's live `ProfilesV2` store. Its
+detached helper derives production roots, authenticates and consumes one-shot requests,
+serializes work with a Windows named mutex, waits for Studio to stop, publishes a complete
+fsynced backup, and uses authenticated journals for rollback or crash recovery. Divergent
+live bytes are never overwritten automatically and are reported as requiring manual
+recovery. Packaging this helper therefore enables managed profile mutation and must not be
+described or reviewed as a diagnostic-only artifact.
+The helper polls Studio process state without opening console windows, publishes
+`Waiting for Studio to close`, and allows ten minutes for the user to close Studio. Large
+Now Playing persists `SmallViewMode: 2` so page activation returns to the background-only
+presentation instead of the built-in clock layer.
 The runtime retains the validated color and grayscale artwork bundle foundation so
 Now Playing can render color while playing, grayscale while paused, and the
 identical color data URI when playback resumes, while the four mosaic actions

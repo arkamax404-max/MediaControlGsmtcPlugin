@@ -17,6 +17,10 @@ from progress_action import (ACTION_UUID, PersistenceRequest, ProgressActionMode
 from progress_state import (ProgressState, extrapolate_position,
                             normalize_progress_state, unavailable_progress_state)
 from transport_actions import action_uuid_from_event
+from largeitem_action import (ACTION_UUID as LARGEITEM_ACTION_UUID,
+                              LargeItemActionModel)
+from setup_action import (ACTION_UUID as SETUP_ACTION_UUID,
+                          SetupActionController)
 
 
 POLL_INTERVAL_SECONDS = 1.5
@@ -29,6 +33,8 @@ class ProgressScheduler:
     def __init__(self, api, client: BridgeClient, model: ProgressActionModel,
                  now_playing_model: NowPlayingActionModel | None = None,
                  artwork_cache: ArtworkBundleCache | None = None,
+                 largeitem_model: LargeItemActionModel | None = None,
+                 setup_controller: SetupActionController | None = None,
                  clock: Callable[[], datetime] | None = None,
                  monotonic: Callable[[], float] = time.monotonic,
                  poll_interval: float = POLL_INTERVAL_SECONDS,
@@ -38,6 +44,8 @@ class ProgressScheduler:
         self.model = model
         self.now_playing_model = now_playing_model or NowPlayingActionModel()
         self.artwork_cache = artwork_cache or ArtworkBundleCache()
+        self.largeitem_model = largeitem_model or LargeItemActionModel()
+        self.setup_controller = setup_controller or SetupActionController(api)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic
         self._poll_interval = poll_interval
@@ -56,6 +64,7 @@ class ProgressScheduler:
         self._dirty = False
         self._retry = False
         self._now_retry = False
+        self._large_retry = False
 
     @property
     def worker_alive(self) -> bool:
@@ -75,6 +84,8 @@ class ProgressScheduler:
         with self._artwork_lock:
             self.artwork_cache.close()
             self.now_playing_model.shutdown()
+            self.largeitem_model.shutdown()
+            self.setup_controller.shutdown()
         self.model.shutdown()
         self._stop.set()
         self._wake.set()
@@ -89,21 +100,30 @@ class ProgressScheduler:
     def handle_add(self, event) -> bool:
         try:
             action = action_uuid_from_event(event)
-            if action != ACTION_UUID and action not in DISPLAY_ACTION_UUIDS:
+            if action == SETUP_ACTION_UUID:
+                return self.setup_controller.add(event)
+            if (action != ACTION_UUID and action != LARGEITEM_ACTION_UUID
+                    and action not in DISPLAY_ACTION_UUIDS):
                 return False
             with self._artwork_lock:
-                had_active = bool(self.model.requests() or self.now_playing_model.requests())
+                had_active = bool(self.model.requests() or self.now_playing_model.requests()
+                                  or self.largeitem_model.requests())
                 self.artwork_cache.invalidate()
                 self.model.clear({"param": [event]})
                 self.now_playing_model.clear({"param": [event]})
-                requests = (self.model.add(event) if action == ACTION_UUID
+                self.largeitem_model.clear({"param": [event]})
+                requests = (self.model.add(event) if action == ACTION_UUID else
+                            self.largeitem_model.add(event) if action == LARGEITEM_ACTION_UUID
                             else self.now_playing_model.add(event))
         except Exception:
             return False
         return self._change(requests, poll_if_first=not had_active)
 
     def handle_run(self, event) -> bool:
-        if action_uuid_from_event(event) != ACTION_UUID:
+        action = action_uuid_from_event(event)
+        if action == SETUP_ACTION_UUID:
+            return self.setup_controller.run(event)
+        if action != ACTION_UUID:
             return False
         try:
             return self._change(self.model.run(event))
@@ -112,21 +132,28 @@ class ProgressScheduler:
 
     def handle_clear(self, event) -> bool:
         try:
+            setup_changed = self.setup_controller.clear(event)
             with self._artwork_lock:
                 self.artwork_cache.invalidate()
-                changed = self.model.clear(event) | self.now_playing_model.clear(event)
+                changed = (self.model.clear(event) | self.now_playing_model.clear(event)
+                           | self.largeitem_model.clear(event))
         except Exception:
             return False
+        changed |= setup_changed
         if changed:
             self._signal()
         return changed
 
     def handle_set_active(self, event) -> bool:
         try:
+            if action_uuid_from_event(event) == SETUP_ACTION_UUID:
+                return self.setup_controller.set_active(event)
             with self._artwork_lock:
-                had_active = bool(self.model.requests() or self.now_playing_model.requests())
+                had_active = bool(self.model.requests() or self.now_playing_model.requests()
+                                  or self.largeitem_model.requests())
                 self.artwork_cache.invalidate()
-                requests = self.model.set_active(event) + self.now_playing_model.set_active(event)
+                requests = (self.model.set_active(event) + self.now_playing_model.set_active(event)
+                            + self.largeitem_model.set_active(event))
         except Exception:
             return False
         return self._change(requests, poll_if_first=not had_active)
@@ -152,6 +179,9 @@ class ProgressScheduler:
             return False
         if not isinstance(context, str) or not context or not isinstance(raw, Mapping):
             return False
+        if self.setup_controller.has_context(context):
+            return self.setup_controller.receive_settings(
+                {"context": context, "settings": raw}, persist=persist)
         view = self.now_playing_model.context(context)
         if view is not None:
             requests = self.now_playing_model.receive_settings(
@@ -163,10 +193,15 @@ class ProgressScheduler:
                 except Exception:
                     pass
             return self._change(requests)
+        if self.largeitem_model.context(context) is not None:
+            return self._change(self.largeitem_model.receive_settings(
+                {"context": context, "settings": raw}, persist=persist))
         return self._change(self.model.receive_settings(
             {"context": context, "settings": raw}, persist=persist))
 
     def handle_inspector_message(self, event) -> bool:
+        if self.setup_controller.inspector_message(event):
+            return True
         if not isinstance(event, Mapping):
             return False
         context, payload = event.get("context"), event.get("payload")
@@ -212,7 +247,8 @@ class ProgressScheduler:
             self._wake.clear()
             requests = self.model.requests()
             now_requests = self.now_playing_model.requests()
-            if not requests and not now_requests:
+            large_requests = self.largeitem_model.requests()
+            if not requests and not now_requests and not large_requests:
                 self._state = None
                 self._media_state = None
                 self._artwork_id = None
@@ -254,6 +290,10 @@ class ProgressScheduler:
             tick = self._next_tick is not None and now >= self._next_tick
             with self._lock:
                 dirty, self._dirty = self._dirty, False
+            if dirty:
+                requests = self.model.requests()
+                now_requests = self.now_playing_model.requests()
+                large_requests = self.largeitem_model.requests()
             state = self._state
             if state is not None and (changed or tick or dirty or self._retry):
                 persistence_retry = self._persist_all(self.model.persistence_requests())
@@ -265,18 +305,31 @@ class ProgressScheduler:
                     now_requests, media_state,
                     self.artwork_cache.get(media_state.artwork_id)
                     if media_state.artwork_id else None)
+            if (media_state is not None and state is not None
+                    and (media_changed or artwork_changed or changed or tick or dirty
+                         or self._large_retry)):
+                large_persistence_retry = self._persist_model(
+                    self.largeitem_model,
+                    self.largeitem_model.persistence_requests(),
+                )
+                self._large_retry = self._render_large_all(
+                    large_requests, media_state, state,
+                    self.artwork_cache.get(media_state.artwork_id)
+                    if media_state.artwork_id else None,
+                ) or large_persistence_retry
             if (polled and media_state is not None
                     and media_state.online and media_state.available
                     and media_state.artwork_id
                     and self.artwork_cache.get(media_state.artwork_id) is None):
                 with self._artwork_lock:
-                    fetch_requests = self.now_playing_model.requests()
+                    fetch_requests = (self.now_playing_model.requests()
+                                      + self.largeitem_model.requests())
                     reservation = (self.artwork_cache.reserve(
                         media_state.artwork_id, fetch_requests) if fetch_requests else None)
                 if reservation is not None:
                     self._fetch_artwork(media_state, reservation)
             now = self._monotonic()
-            playing = (requests and state and state.timeline_available and state.is_playing
+            playing = ((requests or large_requests) and state and state.timeline_available and state.is_playing
                        and extrapolate_position(state, self._clock) < state.duration_seconds)
             if playing and (tick or self._next_tick is None):
                 self._next_tick = now + self._tick_interval
@@ -327,6 +380,27 @@ class ProgressScheduler:
                 retry = True
         return retry
 
+    def _render_large_all(self, requests, media: MediaSnapshot,
+                          progress: ProgressState, bundle) -> bool:
+        retry = False
+        for request in requests:
+            intent = None
+            if self._stop.is_set():
+                return retry
+            try:
+                intent = self.largeitem_model.render(
+                    request, media, progress, bundle, self._clock)
+                if intent is None or not self.largeitem_model.reserve_send(intent):
+                    continue
+                success = bool(self.api.setBaseDataIcon(intent.context, intent.data_uri, ""))
+                acknowledged = self.largeitem_model.acknowledge(intent, success)
+                retry |= acknowledged and not success
+            except Exception:
+                if intent is not None:
+                    self.largeitem_model.acknowledge(intent, False)
+                retry = True
+        return retry
+
     def _fetch_artwork(self, state: MediaSnapshot, reservation) -> None:
         artwork_id = state.artwork_id
         try:
@@ -335,28 +409,38 @@ class ProgressScheduler:
             return
         if not result.ok or not self.artwork_cache.install(reservation, result.bundle):
             return
-        current = self.now_playing_model.requests()
-        relevant = tuple(request for request in reservation.relevance if request in current)
+        current_now = self.now_playing_model.requests()
+        current_large = self.largeitem_model.requests()
+        relevant = tuple(request for request in reservation.relevance if request in current_now)
+        relevant_large = tuple(request for request in reservation.relevance if request in current_large)
         media_state = self._media_state
         if (self._stop.is_set() or media_state is None
-                or media_state.artwork_id != artwork_id or not relevant):
+                or media_state.artwork_id != artwork_id
+                or not (relevant or relevant_large)):
             return
-        self._now_retry = self._render_now_all(relevant, media_state, result.bundle)
+        if relevant:
+            self._now_retry = self._render_now_all(relevant, media_state, result.bundle)
+        if relevant_large and self._state is not None:
+            self._large_retry = self._render_large_all(
+                relevant_large, media_state, self._state, result.bundle)
 
     def _persist_all(self, requests: tuple[PersistenceRequest, ...]) -> bool:
+        return self._persist_model(self.model, requests)
+
+    def _persist_model(self, model, requests) -> bool:
         retry = False
         for request in requests:
             if self._stop.is_set():
                 return retry
             try:
-                if not self.model.reserve_persistence_send(request):
+                if not model.reserve_persistence_send(request):
                     continue
                 success = bool(self.api.setSettings(request.settings, request.context))
             except Exception:
                 success = False
-            if self.model.acknowledge_persistence(
+            if model.acknowledge_persistence(
                     request, success, MAX_PERSIST_ATTEMPTS):
-                retry |= not success and self.model.is_persistence_current(request)
+                retry |= not success and model.is_persistence_current(request)
         return retry
 
 

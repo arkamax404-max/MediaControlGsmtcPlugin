@@ -4,7 +4,7 @@
     "resources/store/banner-actions.png",
     "resources/store/banner-volume.png"
   ],
-  "longDescription": "Media Control for D200 brings Spotify Desktop controls to Ulanzi D200 on Windows through a local companion bridge. It shows Now Playing artwork in color while playing and grayscale while paused, with title and artist; transport controls with live Play/Pause state; selectable per-key audio control for the Windows system volume or any currently active application session; a circular track progress key with per-key color settings; and a four-key artwork mosaic. Volume Up, Volume Down, and Mute Toggle each remember their own source, so they can control the same application or different targets. Everything runs on the same machine through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The companion bridge must be installed and running for the plugin to display live media state.",
+  "longDescription": "Media Control for D200 brings local Windows media controls and now-playing displays to Ulanzi D200. Large Now Playing uses the reserved center display for artwork, title, artist, playback state, progress, and time. Setup Large Display provides a guided Install, Repair, and Restore workflow with authenticated one-shot requests, complete verified backups, atomic profile updates, rollback, and an attempted Studio restart whose failure is reported without undoing a validated profile result. The plugin also includes color/grayscale Now Playing artwork, live transport state, selectable per-key control for system volume or active application sessions, circular track progress with per-key colors, and a four-key artwork mosaic. Volume Up, Volume Down, and Mute Toggle remember independent sources; optional Studio titles can label the controlled source. Everything runs locally through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The companion bridge must be installed and running for live media state.",
   "deviceTypes": [
     "deck"
   ],
@@ -15,6 +15,8 @@
     "volume",
     "audio",
     "windows",
-    "d200"
+    "d200",
+    "now-playing",
+    "large-display"
   ]
 }

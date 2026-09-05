@@ -7,6 +7,7 @@ import {
   ANIMATION_INTERVAL_MS,
   BRIDGE_ORIGIN,
   DEFAULT_PROGRESS_SETTINGS,
+  DEFAULT_LARGEITEM_SETTINGS,
   SpotifyGSMTCPlugin,
   actionFromEvent,
   artworkDataUri,
@@ -20,8 +21,10 @@ import {
   normalizeArtworkBundle,
   normalizeBridgeState,
   normalizeProgressSettings,
+  normalizeLargeItemSettings,
   progressTextLayout,
   renderProgressSvg,
+  renderLargeItemSvg,
   svgDataUri,
 } from "../src/plugin.js";
 import {
@@ -33,6 +36,11 @@ import {
   normalizeInspectorSettings,
   serializeInspectorSettings,
 } from "../property-inspector/progress/inspector.js";
+import {
+  LARGEITEM_DEFAULTS,
+  normalizeLargeItemSettings as normalizeLargeItemInspectorSettings,
+} from "../property-inspector/largeitem/inspector.js";
+import { normalizeSetupStatus, startInspector as startSetupInspector } from "../property-inspector/setup/inspector.js";
 
 const PNG_ARTWORK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn6HhvwMAELoDvkeWIKAAAAAASUVORK5CYII=";
 const GRAYSCALE_ARTWORK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP08fH5LyMj4wgADIYCeqb1R30AAAAASUVORK5CYII=";
@@ -255,8 +263,9 @@ test("fresh command health suppresses every unavailable or incompatible case", a
   }
 });
 
-test("maps all twelve declared action suffixes in the approved namespace", () => {
+test("maps all fourteen declared action suffixes in the approved namespace", () => {
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.nowplaying" }), "nowplaying");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.largeitem-nowplaying" }), "largeitem-nowplaying");
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.previous" }), "previous");
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.toggle" }), "toggle");
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.next" }), "next");
@@ -264,6 +273,7 @@ test("maps all twelve declared action suffixes in the approved namespace", () =>
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.volume-down" }), "volume-down");
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.mute-toggle" }), "mute-toggle");
   assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.progress" }), "progress");
+  assert.equal(actionFromEvent({ uuid: "com.arkamax404.ulanzi.mediacontrol.setup-large-display" }), "setup-large-display");
   for (const action of MOSAIC_ACTIONS) {
     assert.equal(actionFromEvent({ uuid: `com.arkamax404.ulanzi.mediacontrol.${action}` }), action);
   }
@@ -1077,6 +1087,91 @@ test("targets every audio command at its fixed loopback endpoint", async () => {
   ]);
 });
 
+test("renders and configures the large center action only for key 3_2", () => {
+  const normalized = normalizeLargeItemSettings({
+    showArtwork: false, pausedArtwork: "bad", backgroundColor: "#abcdef", fit: "cover",
+  });
+  assert.deepEqual(normalized, normalizeLargeItemInspectorSettings(normalized));
+  assert.equal(normalized.backgroundColor, "#ABCDEF");
+  assert.equal(normalized.pausedArtwork, DEFAULT_LARGEITEM_SETTINGS.pausedArtwork);
+  assert.deepEqual(DEFAULT_LARGEITEM_SETTINGS, LARGEITEM_DEFAULTS);
+  const svg = renderLargeItemSvg(normalizeBridgeState(state(), Date.parse("2026-08-23T12:00:01Z")), null,
+    normalized, Date.parse("2026-08-23T12:00:01Z"));
+  assert.match(svg, /^<svg[^>]*width="458" height="196" viewBox="0 0 458 196"/);
+  assert.match(svg, />Track<\/text>/);
+  assert.match(svg, /font-size="22"[^>]*>Artist<\/text>/);
+  assert.match(svg, /<circle cx="430" cy="28"/);
+  const offline = renderLargeItemSvg({ online: false, available: false, reason: "configuration" });
+  assert.match(offline, />Setup required<\/text>/);
+  assert.ok(!offline.includes('<circle cx="430"'));
+  assert.doesNotThrow(() => Buffer.from(svgDataUri(svg).split(",")[1], "base64"));
+
+  const sdk = createSdk();
+  const plugin = createPlugin({ sdk });
+  plugin.add({ uuid: "com.arkamax404.ulanzi.mediacontrol.largeitem-nowplaying",
+    context: "action___1_1___wrong", param: {} });
+  assert.equal(plugin.contexts.size, 0);
+  plugin.add({ uuid: "com.arkamax404.ulanzi.mediacontrol.largeitem-nowplaying",
+    context: "action___3_2___large", param: {} });
+  assert.equal(plugin.entry("action___3_2___large").action, "largeitem-nowplaying");
+  plugin.stop();
+});
+
+test("renders the setup probe without starting media polling", async () => {
+  assert.deepEqual(normalizeSetupStatus({ status: "Failed", reason: " Not unique " }),
+    { status: "Failed", reason: "Not unique", profileName: "" });
+  assert.equal(normalizeSetupStatus({ status: "Restored" }).status, "Restored");
+  assert.equal(normalizeSetupStatus({ status: "unknown" }).status, "Ready");
+  const sdk = createSdk();
+  let intervals = 0;
+  const plugin = createPlugin({ sdk, setIntervalImpl: () => { intervals += 1; return 1; } });
+  const context = "setup___1_1___30000000-0000-4000-8000-000000000000";
+  plugin.add({ uuid: "com.arkamax404.ulanzi.mediacontrol.setup-large-display", context });
+  assert.equal(intervals, 0);
+  assert.deepEqual(sdk.calls.at(-1), ["path", context, "./assets/setup-large-display.svg", "Failed"]);
+  assert.equal(await plugin.run({ context }), false);
+  plugin.receiveInspectorMessage({ context, payload: { type: "requestSetupStatus" } });
+  assert.deepEqual(sdk.calls.at(-1), ["inspector", {
+    setupStatus: { status: "Failed", reason: "Use the packaged plugin to run this check" },
+  }, context]);
+  plugin.stop();
+});
+
+test("setup inspector consumes every settings channel and polls without leaking its timer", () => {
+  const handlers = {};
+  const calls = [];
+  const operation = { value: "install", addEventListener(type, callback) { handlers[`operation-${type}`] = callback; } };
+  const nodes = {
+    "#status": { textContent: "", style: {} }, "#reason": { textContent: "" },
+    "#profile": { textContent: "" }, "#operation": operation,
+  };
+  const windowHandlers = {};
+  const documentRef = {
+    querySelector(selector) { return nodes[selector]; },
+    defaultView: { addEventListener(type, callback) { windowHandlers[type] = callback; } },
+  };
+  const sdk = {
+    sendToPlugin(value) { calls.push(["request", value]); },
+    sendParamFromPlugin(value) { calls.push(["param", value]); },
+    onConnected(fn) { handlers.connected = fn; }, onAdd(fn) { handlers.add = fn; },
+    onParamFromApp(fn) { handlers.app = fn; }, onParamFromPlugin(fn) { handlers.plugin = fn; },
+    onDidReceiveSettings(fn) { handlers.settings = fn; },
+    onSendToPropertyInspector(fn) { handlers.status = fn; }, connect() {},
+  };
+  let intervalCallback; const cleared = [];
+  startSetupInspector(sdk, documentRef, {
+    setIntervalImpl(fn, milliseconds) { intervalCallback = fn; assert.equal(milliseconds, 1000); return 7; },
+    clearIntervalImpl(id) { cleared.push(id); },
+  });
+  handlers.plugin({ param: { operation: "repair" } }); assert.equal(operation.value, "repair");
+  handlers.settings({ settings: { operation: "restore" } }); assert.equal(operation.value, "restore");
+  handlers.app({ param: { operation: "install" } }); assert.equal(operation.value, "install");
+  intervalCallback();
+  assert.deepEqual(calls.at(-1), ["request", { type: "requestSetupStatus" }]);
+  windowHandlers.beforeunload();
+  assert.deepEqual(cleared, [7]);
+});
+
 test("normalizes mute sources and sends the selected target", async () => {
   assert.equal(normalizeAudioTarget("process:SPOTIFY.EXE"), DEFAULT_AUDIO_TARGET);
   assert.equal(normalizeAudioTarget("process:bad/path.exe"), null);
@@ -1203,13 +1298,13 @@ test("manifest declares approved identity, functional entrypoint, and unique act
   assert.equal(manifest.Category, "Media Control for D200");
   assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
-  assert.equal(manifest.Version, "1.3.0");
+  assert.equal(manifest.Version, "1.4.1");
   const uuids = [manifest.UUID, ...manifest.Actions.map(({ UUID }) => UUID)];
   assert.equal(new Set(uuids).size, uuids.length);
   assert.deepEqual(manifest.Actions.map(({ UUID }) => UUID), [
-    "nowplaying", "artwork-top-left", "artwork-top-right", "artwork-bottom-left",
+    "nowplaying", "largeitem-nowplaying", "artwork-top-left", "artwork-top-right", "artwork-bottom-left",
     "artwork-bottom-right", "previous", "toggle", "next", "volume-up", "volume-down",
-    "mute-toggle", "progress",
+    "mute-toggle", "progress", "setup-large-display",
   ].map((suffix) => `${manifest.UUID}.${suffix}`));
   readFileSync(new URL(`../${manifest.CodePath}`, import.meta.url));
   const assetPaths = new Set([

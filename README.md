@@ -21,6 +21,8 @@ on the same machine and communicates over loopback only.
 
 The plugin package itself is self-contained: it runs on Ulanzi Studio's embedded Node.js
 and a frozen Python runtime, so plugin users do not install Python, Node.js, or npm.
+The managed Large Display workflow is physically validated on Ulanzi Studio 3.2.11;
+revalidate profile compatibility after upgrading Studio.
 
 ## Components
 
@@ -29,7 +31,7 @@ Two pieces cooperate:
 1. **Companion bridge** — a Python service that subscribes to Windows GSMTC and Core
    Audio, caches media state and artwork, and exposes a token-authenticated API on
    `http://127.0.0.1:43821` only.
-2. **Plugin** — an Ulanzi Studio plugin with twelve actions. A small Node.js launcher
+2. **Plugin** — an Ulanzi Studio plugin with fourteen actions. A small Node.js launcher
    starts the bundled frozen Python runtime, which polls the bridge and renders every key.
 
 ### Companion setup
@@ -89,11 +91,29 @@ choice: select the same source on all three keys for a unified volume control, o
 different sources when desired. If an application is missing, start audio in it and wait
 for the list to refresh.
 
-## The Twelve Actions
+### Large display quick setup
+
+1. Open the target page and drag **Setup Large Display** to an unused normal key.
+2. Select that key, choose **Install** in its Property Inspector, and press it once.
+3. Wait for `Waiting for Studio to close`, then close Studio normally. Do not end its
+   process or edit profile files.
+4. Profile Assistant creates and verifies a complete backup, installs Large Now Playing,
+   validates the result, and attempts to open Studio again. If restart fails, the profile
+   result remains committed but Setup reports `Failed`; open Studio manually after reading
+   the status.
+5. Return to the target page. The center display now shows current media and the Setup key
+   can be removed or reused.
+
+Choose **Repair** if Studio later restores the built-in center widget. Choose **Restore
+original** to recover the exact widget entry captured during Install. Both operations use
+the same close and validation flow, followed by an attempted automatic relaunch.
+
+## The Fourteen Actions
 
 | Action | Press behavior | Key display |
 |---|---|---|
 | Now Playing | Toggle play/pause | Full artwork: color while playing, grayscale while paused, with title and artist |
+| Large Now Playing | None (display only) | Center display with artwork, title, artist, playback state, progress, and time |
 | Previous | Previous track | Transport icon with `Previous` label |
 | Play/Pause | Toggle play/pause | `Pause` icon while playing, `Play` icon while paused |
 | Next | Next track | Transport icon with `Next` label |
@@ -105,10 +125,80 @@ for the list to refresh.
 | Artwork Top Right | None (display only) | Top-right quadrant of the artwork |
 | Artwork Bottom Left | None (display only) | Bottom-left quadrant of the artwork |
 | Artwork Bottom Right | None (display only) | Bottom-right quadrant of the artwork |
+| Setup Large Display | Install, repair, or restore the managed center action | Live transaction, recovery, and failure status |
 
 Every action renders its own fallback when the companion is unreachable
 (`Offline`), not yet configured (`Companion setup required`), or running an
 incompatible API version (`Incompatible companion`).
+
+### Large Now Playing
+
+Ulanzi Studio reserves the D200 center slot `3_2` for its built-in small-window action,
+so this action cannot be assigned by dragging it in the page editor. The managed Setup
+action described below can update the exact live page while Studio is closed. The offline
+clone workflow remains available when a separately imported profile is preferred.
+
+With Studio closed, inspect an exported Version 2 profile:
+
+```powershell
+python .\tools\profile_tool.py inspect .\MyProfile.ulanziDeckProfile
+```
+
+Select the intended page ID from the output, then create a new clone. Use the manifest
+from the exact plugin build that will be installed:
+
+```powershell
+python .\tools\profile_tool.py patch `
+  .\MyProfile.ulanziDeckProfile `
+  .\MyProfile.media-control.ulanziDeckProfile `
+  --profile-id <PROFILE_ID> `
+  --plugin-manifest .\com.arkamax404.mediacontrold200.ulanziPlugin\manifest.json
+```
+
+The command refuses to run while Studio is active, never overwrites an output, clones
+the package, every page, and every action identity, and writes a sibling receipt with
+hashes and validation results. Preserve the untouched export: it is the only rollback
+authority. Start Studio only after both files have been written, import the clone, and
+select it as a separate profile.
+
+The runtime renders a fixed 458x196 SVG through the legacy `setBaseDataIcon` contract.
+Its Property Inspector controls artwork visibility and fit, paused artwork, progress and
+time labels, and presentation colors. Profile cloning is an offline installation step;
+it is never imported or executed by the running plugin.
+Large Now Playing persistently sets the private `SmallViewMode` to `2`, preventing the
+built-in clock layer from returning when the page is reloaded. A user may temporarily
+cycle the presentation from the device, but leaving and reopening the page restores the
+background-only media view.
+
+### Setup Large Display
+
+Setup Large Display is a managed local profile operation. Place it on a normal key in the
+page whose center display will be managed, choose **Install**, **Repair**, or **Restore** in
+the Property Inspector, and press it. Close Ulanzi Studio when requested. The detached
+helper derives the production paths itself, waits for Studio to stop, creates and verifies
+a complete backup, and only then atomically updates the identified center entry. Install
+and Repair require the built-in center action; Restore requires the exact managed Large
+Now Playing entry and restores the original entry from its authenticated backup lineage.
+
+This operation changes Studio's live `ProfilesV2` data and is therefore not risk-free.
+Do not move, edit, or synchronize profile files while it runs. Keep the backup and state
+directories under `%LOCALAPPDATA%\GSMTCD200Controller`. If the status reports that manual
+recovery is required, the helper detected bytes that belong to neither side of its
+transaction and deliberately preserved them instead of overwriting them. Back up that
+profile before resolving the conflict. Process checks are repeated immediately before
+every write and rollback; Windows cannot make process observation and process start one
+indivisible operation, so a Studio start in the final instruction-level gap remains an
+unavoidable residual race. The helper fails closed whenever it observes Studio running or
+cannot determine its state.
+
+| Status | Meaning |
+|---|---|
+| `Ready` | The Setup key uniquely identifies a compatible page with the built-in center widget. |
+| `Launching` | The detached Profile Assistant process is starting. |
+| `Waiting for Studio to close` | Close Studio normally so the offline transaction can continue. |
+| `Installed` | Install or Repair completed; no restart failure was reported. |
+| `Restored` | The exact original center widget was restored; no restart failure was reported. |
+| `Failed` | The operation failed or Studio could not be restarted. A restart failure can occur after a validated profile update; read the reason before retrying or opening Studio manually. |
 
 ### Now Playing
 
@@ -139,7 +229,9 @@ Volume Up and Volume Down show the current percentage, `Muted`, `Mixed`, `No aud
 `Offline`. Mute Toggle renders a generated key image with the selected source percentage
 at the top and a speaker icon below — the muted speaker while audio is active and the
 unmuted speaker while muted — switching to `Muted`, `Mixed`, or `No audio` states as
-appropriate.
+appropriate. Its speaker is vertically aligned with Volume Up and Volume Down. Studio's
+normal key title remains optional and user-controlled, so it can label the selected audio
+source without the plugin forcing that text.
 
 `pycaw` enumerates application sessions and accesses the master volume on the default
 render endpoint. Sources playing through another render endpoint are outside this
@@ -211,6 +303,10 @@ transitions may temporarily expose no duration; the key then shows `No timeline`
 | Progress key shows `No timeline` | GSMTC did not publish a positive finite duration yet. Change tracks or wait for the Spotify session timeline event. |
 | Progress colors do not save | Enter a complete `#RRGGBB` value in the visible HEX field; invalid values revert to defaults. |
 | Progress freezes while playing | Confirm the key is active in the current Studio profile and `/state` reports `timeline_available: true` and `is_playing: true`. |
+| Setup remains on `Launching` | Keep Studio open until the status changes to `Waiting for Studio to close`. The helper waits up to ten minutes after that request. |
+| Setup reports `Failed` | Do not repeat the operation blindly. Read the Property Inspector reason. The helper either stopped before writing, rolled back a proven partial update, or completed the profile update but could not restart Studio; the message distinguishes these cases. |
+| Setup reports manual recovery | The live manifest differs from both the original and intended result. The helper preserves it. Keep Studio closed and back up `%APPDATA%\Ulanzi\UlanziDeck\ProfilesV2` before resolving the conflict. |
+| The center clock returns | Confirm the Large Now Playing settings contain `SmallViewMode: 2`; reopening the page should restore background-only mode. |
 
 ## Architecture
 
@@ -270,7 +366,7 @@ produces the release plugin folder, and the per-user companion installer.
 - Plugin source: `com.arkamax404.mediacontrold200.ulanziPlugin`
 - Companion bridge: `d200_bridge`
 - Release packaging: `packaging\README.md` (builds the frozen runtime and the
-  twelve-action plugin folder whose manifest points at `src/launcher.js`)
+  fourteen-action plugin folder whose manifest points at `src/launcher.js`)
 - Companion installer: `installer\README.md`
 
 The source manifest keeps `CodePath: src/app.js` for in-repo Node.js development and
@@ -325,6 +421,17 @@ architecture boundaries, and safe verification expectations.
 
 Potential vulnerabilities require private handling. Read [SECURITY.md](SECURITY.md)
 before preparing a report; a verified private contact remains a publication blocker.
+
+## Acknowledgements
+
+Special thanks to [chilleno/claude-deck](https://github.com/chilleno/claude-deck) for
+publicly documenting and demonstrating the community technique for assigning a
+third-party action to the Ulanzi D200 reserved center slot (`3_2`). That evidence was
+an important reference for the Large Now Playing implementation in this project.
+
+Media Control for D200 independently implements its runtime rendering, profile safety,
+backup, validation, repair, and rollback behavior and is not affiliated with or endorsed
+by the Claude Deck project.
 
 ## License
 

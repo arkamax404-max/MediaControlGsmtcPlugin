@@ -9,6 +9,8 @@ from typing import Callable, Sequence, TextIO
 from bridge_client import BridgeClient, bridge_origin_from_future
 from artwork_bundle import ArtworkBundleCache
 from now_playing_action import NowPlayingActionModel
+from largeitem_action import LargeItemActionModel
+from setup_action import SetupActionController
 from progress_action import ProgressActionModel
 from progress_scheduler import (WORKER_STOP_TIMEOUT_SECONDS as PROGRESS_STOP_TIMEOUT_SECONDS,
                                 ProgressScheduler, register_progress_handlers)
@@ -73,6 +75,8 @@ class Runtime:
         router_factory: Callable[[HostArguments], TransportRouter] | None = None,
         progress_model_factory: Callable[[], ProgressActionModel] = ProgressActionModel,
         now_playing_model_factory: Callable[[], NowPlayingActionModel] = NowPlayingActionModel,
+        largeitem_model_factory: Callable[[], LargeItemActionModel] = LargeItemActionModel,
+        setup_controller_factory: Callable[[object], SetupActionController] = SetupActionController,
         artwork_cache_factory: Callable[[], ArtworkBundleCache] = ArtworkBundleCache,
         progress_scheduler_factory: Callable[..., ProgressScheduler] = ProgressScheduler,
     ) -> None:
@@ -95,10 +99,14 @@ class Runtime:
         self.router = router
         self.progress_model: ProgressActionModel | None = None
         self.now_playing_model: NowPlayingActionModel | None = None
+        self.largeitem_model: LargeItemActionModel | None = None
+        self.setup_controller: SetupActionController | None = None
         self.artwork_cache: ArtworkBundleCache | None = None
         self.progress_scheduler: ProgressScheduler | None = None
         self._progress_model_factory = progress_model_factory
         self._now_playing_model_factory = now_playing_model_factory
+        self._largeitem_model_factory = largeitem_model_factory
+        self._setup_controller_factory = setup_controller_factory
         self._artwork_cache_factory = artwork_cache_factory
         self._progress_scheduler_factory = progress_scheduler_factory
         self._router_factory = router_factory or (
@@ -271,10 +279,13 @@ class Runtime:
                 if client is not None:
                     self.progress_model = self._progress_model_factory()
                     self.now_playing_model = self._now_playing_model_factory()
+                    self.largeitem_model = self._largeitem_model_factory()
+                    self.setup_controller = self._setup_controller_factory(api)
                     self.artwork_cache = self._artwork_cache_factory()
                     self.progress_scheduler = self._progress_scheduler_factory(
                         api, client, self.progress_model,
-                        self.now_playing_model, self.artwork_cache
+                        self.now_playing_model, self.artwork_cache, self.largeitem_model,
+                        self.setup_controller
                     )
                     configure = getattr(self.router, "configure_runtime", None)
                     if configure is not None:
@@ -302,6 +313,10 @@ class Runtime:
 
 
 def main(argv: Sequence[str] | None = None, stdin: TextIO = sys.stdin) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["--profile-assistant"]:
+        from profile_assistant import profile_assistant_main
+        return profile_assistant_main(arguments[1:])
     runtime = Runtime()
 
     def stop_from_signal(signum, _frame) -> None:
@@ -309,7 +324,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIO = sys.stdin) -> int:
 
     signal.signal(signal.SIGINT, stop_from_signal)
     signal.signal(signal.SIGTERM, stop_from_signal)
-    return runtime.run(parse_host_arguments(sys.argv[1:] if argv is None else argv), stdin)
+    return runtime.run(parse_host_arguments(arguments), stdin)
 
 
 if __name__ == "__main__":
