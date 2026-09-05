@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from html import escape
@@ -15,6 +15,7 @@ from artwork_bundle import ARTWORK_ID_PATTERN, ArtworkBundle
 
 ACTION_UUID = "com.arkamax404.ulanzi.mediacontrol.nowplaying"
 MUTE_TOGGLE_UUID = "com.arkamax404.ulanzi.mediacontrol.mute-toggle"
+DEFAULT_AUDIO_TARGET = "process:spotify.exe"
 MOSAIC_ACTIONS = {
     "com.arkamax404.ulanzi.mediacontrol.artwork-top-left":
         (0, "./assets/artwork-top-left.svg", "Artwork Top Left"),
@@ -60,6 +61,16 @@ STATUS_LABELS = {
 
 
 @dataclass(frozen=True)
+class AudioSource:
+    target: str
+    label: str
+    volume_percent: int
+    is_muted: bool
+    session_count: int
+    mixed: bool
+
+
+@dataclass(frozen=True)
 class MediaSnapshot:
     online: bool
     available: bool
@@ -72,6 +83,7 @@ class MediaSnapshot:
     volume_percent: int | None = None
     is_muted: bool = False
     audio_mixed: bool = False
+    audio_sources: tuple[AudioSource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +110,8 @@ class ContextView:
     generation: int
     version: int
     active: bool
+    action: str
+    audio_target: str
 
 
 @dataclass
@@ -107,12 +121,13 @@ class _Context:
     version: int = 1
     active: bool = True
     committed_signature: tuple[str, str, str] | None = None
+    audio_target: str = DEFAULT_AUDIO_TARGET
 
 
 def unavailable_media_snapshot(reason: str = "unavailable") -> MediaSnapshot:
     status = reason if reason in ("configuration", "incompatible") else "offline"
     return MediaSnapshot(False, False, False, "", "", None, status,
-                         False, None, False, False)
+                         False, None, False, False, ())
 
 
 def normalize_media_snapshot(
@@ -138,13 +153,14 @@ def normalize_media_snapshot(
         volume_candidate = payload.get("volume_percent")
         is_muted = payload.get("is_muted") is True
         audio_mixed = payload.get("audio_mixed") is True
+        audio_sources = _normalize_audio_sources(payload.get("audio_sources"))
     except Exception:
         return unavailable_media_snapshot()
     artwork_id = candidate if isinstance(candidate, str) and ARTWORK_ID_PATTERN.fullmatch(candidate) else None
     return MediaSnapshot(True, available, is_playing,
                          title, artist, artwork_id, "ready" if available else "no_session",
                          audio_available, _volume_percent(volume_candidate),
-                         is_muted, audio_mixed)
+                         is_muted, audio_mixed, audio_sources)
 
 
 def now_playing_text(snapshot: MediaSnapshot) -> str:
@@ -191,18 +207,23 @@ class NowPlayingActionModel:
             return None
         with self._lock:
             entry = self._contexts.get(context)
-            return (ContextView(context, entry.generation, entry.version, entry.active)
+            return (ContextView(context, entry.generation, entry.version, entry.active,
+                                entry.action, entry.audio_target)
                     if entry else None)
 
     def add(self, event: object) -> tuple[RenderRequest, ...]:
         action, context = _event_identity(event)
         if action not in DISPLAY_ACTION_UUIDS or not context:
             return ()
+        raw = event.get("param") if isinstance(event, Mapping) else None
+        target = (normalize_audio_target(raw.get("audioTarget"))
+                  if action in AUDIO_ACTIONS and isinstance(raw, Mapping) else None)
         with self._lock:
             if self._shutdown:
                 return ()
             self._next_generation += 1
-            entry = _Context(self._next_generation, action)
+            entry = _Context(self._next_generation, action,
+                             audio_target=target or DEFAULT_AUDIO_TARGET)
             self._contexts[context] = entry
             return (self._request(context, entry),)
 
@@ -246,6 +267,38 @@ class NowPlayingActionModel:
             return tuple(self._request(context, entry) for context, entry in self._contexts.items()
                          if entry.active)
 
+    def receive_settings(self, event: object) -> tuple[RenderRequest, ...]:
+        if not isinstance(event, Mapping):
+            return ()
+        context = _identity(event.get("context"))
+        raw = event.get("settings", event.get("param"))
+        if context is None or not isinstance(raw, Mapping):
+            return ()
+        target = normalize_audio_target(raw.get("audioTarget")) or DEFAULT_AUDIO_TARGET
+        with self._lock:
+            entry = self._contexts.get(context)
+            if self._shutdown or entry is None or entry.action not in AUDIO_ACTIONS:
+                return ()
+            entry.audio_target = target
+            entry.version += 1
+            entry.committed_signature = None
+            return (self._request(context, entry),) if entry.active else ()
+
+    def audio_target_from_event(self, event: object) -> str | None:
+        context = _identity(event.get("context")) if isinstance(event, Mapping) else None
+        if context is None:
+            return None
+        with self._lock:
+            entry = self._contexts.get(context)
+            return entry.audio_target if entry and entry.action in AUDIO_ACTIONS else None
+
+    def audio_contexts(self) -> tuple[ContextView, ...]:
+        with self._lock:
+            return tuple(ContextView(context, entry.generation, entry.version, entry.active,
+                                     entry.action, entry.audio_target)
+                         for context, entry in self._contexts.items()
+                         if entry.action in AUDIO_ACTIONS)
+
     def render(self, request: RenderRequest, snapshot: MediaSnapshot,
                bundle: ArtworkBundle | None = None) -> RenderIntent | None:
         if not isinstance(request, RenderRequest) or not isinstance(snapshot, MediaSnapshot):
@@ -256,6 +309,7 @@ class NowPlayingActionModel:
         with self._lock:
             entry = self._matching(request)
             action = entry.action if entry and entry.active else None
+            audio_target = entry.audio_target if entry else DEFAULT_AUDIO_TARGET
         if action is None:
             return None
         online, available = snapshot.online, snapshot.available
@@ -276,6 +330,7 @@ class NowPlayingActionModel:
             else:
                 method, image = "setPathIcon", fallback
         elif audio is not None:
+            snapshot = _snapshot_for_audio_target(snapshot, audio_target)
             if action == MUTE_TOGGLE_UUID:
                 method = "setBaseDataIcon"
                 image = mute_toggle_data_uri(_audio_state_label(snapshot),
@@ -442,6 +497,47 @@ def _integer(value: object) -> int | None:
 def _volume_percent(value: object) -> int | None:
     volume = _integer(value)
     return None if volume is None else max(0, min(100, volume))
+
+
+def normalize_audio_target(value: object) -> str | None:
+    if value == "system":
+        return value
+    if not isinstance(value, str) or not value.startswith("process:"):
+        return None
+    process = value[8:].strip().casefold()
+    if (not process or len(process) > 128 or "/" in process or "\\" in process
+            or any(ord(char) < 32 for char in process)):
+        return None
+    return "process:" + process
+
+
+def _normalize_audio_sources(value: object) -> tuple[AudioSource, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    sources = []
+    for item in value[:64]:
+        if not isinstance(item, Mapping):
+            continue
+        target = normalize_audio_target(item.get("target"))
+        label = _text(item.get("label"))
+        volume = _volume_percent(item.get("volume_percent"))
+        count = _integer(item.get("session_count"))
+        if target is None or not label or volume is None or count is None or count < 0:
+            continue
+        sources.append(AudioSource(target, label, volume, item.get("is_muted") is True,
+                                   count, item.get("mixed") is True))
+    return tuple(sources)
+
+
+def _snapshot_for_audio_target(snapshot: MediaSnapshot, target: str) -> MediaSnapshot:
+    source = next((item for item in snapshot.audio_sources if item.target == target), None)
+    if source is None:
+        if not snapshot.audio_sources and target == DEFAULT_AUDIO_TARGET:
+            return snapshot
+        return replace(snapshot, audio_available=False, volume_percent=None,
+                       is_muted=False, audio_mixed=False)
+    return replace(snapshot, audio_available=True, volume_percent=source.volume_percent,
+                   is_muted=source.is_muted, audio_mixed=source.mixed)
 
 
 def _js_truthy(value: object) -> bool:

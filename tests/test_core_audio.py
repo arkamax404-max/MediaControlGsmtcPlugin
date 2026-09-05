@@ -52,8 +52,9 @@ class FakeSession:
 
 
 class FakeEnumerator:
-    def __init__(self, batches):
+    def __init__(self, batches, master=None):
         self.batches = list(batches)
+        self.master_session = master
         self.calls = 0
 
     @contextmanager
@@ -63,6 +64,9 @@ class FakeEnumerator:
         if isinstance(batch, Exception):
             raise batch
         yield batch
+
+    def master(self):
+        return self.master_session
 
 
 class ConcurrentReadSession(FakeSession):
@@ -154,6 +158,33 @@ class CoreAudioTests(unittest.TestCase):
         state = cache.get()
         self.assertEqual(state.audio_session_count, 1)
         self.assertEqual(state.volume_percent, 40)
+
+    def test_lists_current_processes_and_targets_selected_process_or_system(self):
+        spotify = FakeSession("Spotify.exe", 0.4)
+        browser_one = FakeSession("Browser.exe", 0.7)
+        browser_two = FakeSession("browser.EXE", 0.5, muted=True)
+        master = FakeSession("system", 0.8)
+        cache = MediaStateCache()
+        enumerator = FakeEnumerator([[spotify, browser_one, browser_two]] * 4, master)
+        controller = CoreAudioController(cache, enumerator)
+
+        self.assertTrue(controller.refresh())
+        self.assertEqual([(item.target, item.label) for item in cache.get().audio_sources], [
+            ("system", "System volume"),
+            ("process:spotify.exe", "spotify"),
+            ("process:browser.exe", "browser"),
+        ])
+        browser_result = controller.command("mute-toggle", "process:BROWSER.exe")
+        volume_result = controller.command("volume-up", "process:browser.exe")
+        system_result = controller.command("mute-toggle", "system")
+
+        self.assertTrue(browser_result.ok)
+        self.assertEqual((browser_one.muted, browser_two.muted), (True, True))
+        self.assertTrue(volume_result.ok)
+        self.assertEqual((browser_one.volume, browser_two.volume), (0.75, 0.55))
+        self.assertTrue(system_result.ok)
+        self.assertTrue(master.muted)
+        self.assertFalse(spotify.muted)
 
     def test_refresh_holds_transaction_lock_until_state_is_published(self):
         probe = TransactionProbe()

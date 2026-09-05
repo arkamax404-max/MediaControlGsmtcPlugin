@@ -16,6 +16,10 @@ RUNTIME_ASSET_FILES = ("assets/music.svg", "assets/offline.svg")
 PROPERTY_INSPECTOR_FILES = (
     "property-inspector/progress/inspector.html",
     "property-inspector/progress/inspector.js",
+    "property-inspector/mute/inspector.html",
+    "property-inspector/mute/inspector.js",
+    "property-inspector/volume-up/inspector.html",
+    "property-inspector/volume-down/inspector.html",
 )
 PROPERTY_INSPECTOR_VENDOR_FILES = (
     "vendor/ulanzi-sdk/html/js/constants.js",
@@ -116,6 +120,17 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
                     if action.get("UUID") == f"{manifest['UUID']}.progress")
     if progress.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[0]:
         raise ValueError("Progress property inspector path is missing")
+    mute = next(action for action in manifest["Actions"]
+                if action.get("UUID") == f"{manifest['UUID']}.mute-toggle")
+    if mute.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[2]:
+        raise ValueError("Mute property inspector path is missing")
+    volume_up = next(action for action in manifest["Actions"]
+                     if action.get("UUID") == f"{manifest['UUID']}.volume-up")
+    volume_down = next(action for action in manifest["Actions"]
+                       if action.get("UUID") == f"{manifest['UUID']}.volume-down")
+    if (volume_up.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[4]
+            or volume_down.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[5]):
+        raise ValueError("Volume property inspector paths are missing")
     asset_references = {
         manifest.get("Icon"),
         manifest.get("CategoryIcon"),
@@ -127,26 +142,30 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
     for reference in asset_references:
         exact_source_path(plugin_source, reference, "assets")
 
-    inspector = exact_source_path(plugin_source, PROPERTY_INSPECTOR_FILES[0],
-                                  "property-inspector")
-    parser = _ScriptReferences()
-    parser.feed(inspector.read_text("utf-8"))
     resolved_scripts = []
-    inspector_parent = PurePosixPath(PROPERTY_INSPECTOR_FILES[0]).parent
-    for source in parser.sources:
-        source_path = PurePosixPath(source)
-        if source_path.is_absolute():
-            raise ValueError("Property inspector contains an unsafe script path")
-        parts = []
-        for part in (*inspector_parent.parts, *source_path.parts):
-            if part == "..":
-                if not parts:
-                    raise ValueError("Property inspector script escapes the package")
-                parts.pop()
-            elif part not in ("", "."):
-                parts.append(part)
-        resolved_scripts.append(PurePosixPath(*parts).as_posix())
-    expected_scripts = (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[1])
+    for inspector_name in (PROPERTY_INSPECTOR_FILES[0], PROPERTY_INSPECTOR_FILES[2],
+                           PROPERTY_INSPECTOR_FILES[4], PROPERTY_INSPECTOR_FILES[5]):
+        inspector = exact_source_path(plugin_source, inspector_name, "property-inspector")
+        parser = _ScriptReferences()
+        parser.feed(inspector.read_text("utf-8"))
+        inspector_parent = PurePosixPath(inspector_name).parent
+        for source in parser.sources:
+            source_path = PurePosixPath(source)
+            if source_path.is_absolute():
+                raise ValueError("Property inspector contains an unsafe script path")
+            parts = []
+            for part in (*inspector_parent.parts, *source_path.parts):
+                if part == "..":
+                    if not parts:
+                        raise ValueError("Property inspector script escapes the package")
+                    parts.pop()
+                elif part not in ("", "."):
+                    parts.append(part)
+            resolved_scripts.append(PurePosixPath(*parts).as_posix())
+    expected_scripts = (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[1],
+                        *PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[3],
+                        *PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[3],
+                        *PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[3])
     if tuple(resolved_scripts) != expected_scripts:
         raise ValueError("Property inspector script inventory is not approved")
     for reference in (*PROPERTY_INSPECTOR_FILES, *PROPERTY_INSPECTOR_VENDOR_FILES):

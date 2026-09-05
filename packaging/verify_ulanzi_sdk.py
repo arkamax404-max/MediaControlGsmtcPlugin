@@ -39,6 +39,11 @@ def inspect_sdk():
     settings_parameters = tuple(inspect.signature(UlanziApi.setSettings).parameters)
     if settings_parameters != EXPECTED_SET_SETTINGS_PARAMETERS:
         raise RuntimeError(f"Unexpected UlanziApi.setSettings signature: {settings_parameters}")
+    inspector_parameters = tuple(inspect.signature(
+        UlanziApi.sendToPropertyInspector).parameters)
+    if inspector_parameters != ("self", "settings", "context") \
+            or not callable(getattr(UlanziApi, "onSendToPlugin", None)):
+        raise RuntimeError("UlanziApi property inspector messaging contract is unavailable")
     display_parameters = tuple(inspect.signature(UlanziApi.setBaseDataIcon).parameters)
     path_parameters = tuple(inspect.signature(UlanziApi.setPathIcon).parameters)
     if display_parameters != EXPECTED_DISPLAY_PARAMETERS or path_parameters != EXPECTED_PATH_PARAMETERS:
@@ -65,7 +70,7 @@ def inspect_sdk():
             self.commands = []
             self.completed = threading.Event()
 
-        def execute(self, command, cancelled=None):
+        def execute(self, command, cancelled=None, audio_target=None):
             self.commands.append(command)
             if len(self.commands) == 7:
                 self.completed.set()
@@ -78,6 +83,14 @@ def inspect_sdk():
                 "artist": "Artist", "artwork_id": "a" * 64,
                 "audio_available": True, "volume_percent": 55,
                 "is_muted": len(self.commands) >= 6, "audio_mixed": False,
+                "audio_sources": [
+                    {"target": "system", "label": "System volume",
+                     "volume_percent": 55, "is_muted": False,
+                     "session_count": 1, "mixed": False},
+                    {"target": "process:spotify.exe", "label": "spotify",
+                     "volume_percent": 55, "is_muted": len(self.commands) >= 6,
+                     "session_count": 1, "mixed": False},
+                ],
                 "timeline_available": False, "position_seconds": 0,
                 "duration_seconds": 0, "playback_rate": 1,
                 "position_updated_at": "", "updated_at": now,
@@ -92,7 +105,8 @@ def inspect_sdk():
     router = TransportRouter(client=probe_client)
     scheduler = ProgressScheduler(api, probe_client, ProgressActionModel(),
                                   NowPlayingActionModel(), ArtworkBundleCache())
-    router.configure_runtime(scheduler.handle_run, scheduler.request_poll)
+    router.configure_runtime(scheduler.handle_run, scheduler.request_poll,
+                             scheduler.now_playing_model.audio_target_from_event)
     router.start()
     scheduler.start()
     register_transport_handlers(api, router)
@@ -100,7 +114,7 @@ def inspect_sdk():
     handler_counts = {
         name: len(api._listeners.get(name, []))
         for name in ("add", "run", "keydown", "keyup", "clear", "setactive", "paramfromplugin",
-                      "didReceiveSettings")
+                      "didReceiveSettings", "sendToPlugin")
     }
     expected_handler_counts = {
         "add": 1,
@@ -111,6 +125,7 @@ def inspect_sdk():
         "setactive": 1,
         "paramfromplugin": 1,
         "didReceiveSettings": 1,
+        "sendToPlugin": 1,
     }
     if handler_counts != expected_handler_counts:
         raise RuntimeError(f"Unexpected real SDK handler counts: {handler_counts}")
@@ -127,6 +142,8 @@ def inspect_sdk():
         audio_context = f"audio-{index}___audio-key-{index}___audio-action-{index}"
         audio_contexts.append(audio_context)
         api.emit("add", {"uuid": action, "context": audio_context})
+    api.emit("sendToPlugin", {"context": audio_contexts[2],
+                              "payload": {"type": "requestAudioSources"}})
     transport_contexts = []
     for index, action in enumerate(TRANSPORT_DISPLAY):
         transport_context = f"transport-{index}___transport-key-{index}___transport-action-{index}"
@@ -144,6 +161,12 @@ def inspect_sdk():
         time.sleep(0.005)
     if not socket.messages:
         raise RuntimeError("Integrated progress scheduler did not emit a display")
+    inspector_messages = [item for item in socket.messages
+                          if item[1].get("cmd") == "sendToPropertyInspector"]
+    if not inspector_messages or inspector_messages[-1][1].get("payload") != {
+            "audioSources": [{"target": "system", "label": "System volume"},
+                             {"target": "process:spotify.exe", "label": "spotify"}]}:
+        raise RuntimeError(f"Integrated inspector response is missing: {socket.messages}")
     settings_messages = [item for item in socket.messages if item[1].get("cmd") == "setSettings"]
     display_messages = [item for item in socket.messages if item[1].get("cmd") == "state"]
     if len(settings_messages) != 1 or not display_messages:

@@ -8,9 +8,10 @@ from typing import Callable
 
 from bridge_client import BridgeClient
 from artwork_bundle import ArtworkBundleCache
-from now_playing_action import (DISPLAY_ACTION_UUIDS, MediaSnapshot,
-                                NowPlayingActionModel, normalize_media_snapshot,
-                                unavailable_media_snapshot)
+from now_playing_action import (AUDIO_ACTIONS, DEFAULT_AUDIO_TARGET, DISPLAY_ACTION_UUIDS,
+                                 MediaSnapshot,
+                                 NowPlayingActionModel, normalize_media_snapshot,
+                                 normalize_audio_target, unavailable_media_snapshot)
 from progress_action import (ACTION_UUID, PersistenceRequest, ProgressActionModel,
                              RenderRequest as ProgressRenderRequest)
 from progress_state import (ProgressState, extrapolate_position,
@@ -151,9 +152,46 @@ class ProgressScheduler:
             return False
         if not isinstance(context, str) or not context or not isinstance(raw, Mapping):
             return False
+        view = self.now_playing_model.context(context)
+        if view is not None:
+            requests = self.now_playing_model.receive_settings(
+                {"context": context, "settings": raw})
+            if persist and requests:
+                try:
+                    target = normalize_audio_target(raw.get("audioTarget"))
+                    self.api.setSettings({"audioTarget": target or DEFAULT_AUDIO_TARGET}, context)
+                except Exception:
+                    pass
+            return self._change(requests)
         return self._change(self.model.receive_settings(
-            {"context": context, "settings": raw}, persist=persist
-        ))
+            {"context": context, "settings": raw}, persist=persist))
+
+    def handle_inspector_message(self, event) -> bool:
+        if not isinstance(event, Mapping):
+            return False
+        context, payload = event.get("context"), event.get("payload")
+        view = self.now_playing_model.context(context)
+        if (view is None or view.action not in AUDIO_ACTIONS
+                or not isinstance(payload, Mapping)
+                or payload.get("type") != "requestAudioSources"):
+            return False
+        self._send_audio_sources(context)
+        self.request_poll()
+        return True
+
+    def _send_audio_sources(self, context=None) -> None:
+        state = self._media_state
+        sources = [] if state is None else [
+            {"target": item.target, "label": item.label}
+            for item in state.audio_sources
+        ]
+        contexts = ((context,) if context else
+                    tuple(view.context for view in self.now_playing_model.audio_contexts()))
+        for destination in contexts:
+            try:
+                self.api.sendToPropertyInspector({"audioSources": sources}, destination)
+            except Exception:
+                pass
 
     def _change(self, requests: tuple[object, ...], poll_if_first: bool = False) -> bool:
         if not requests:
@@ -199,6 +237,8 @@ class ProgressScheduler:
                 media_changed = media_state != self._media_state
                 self._state = state
                 self._media_state = media_state
+                if media_changed:
+                    self._send_audio_sources()
                 artwork_changed = media_state.artwork_id != self._artwork_id
                 if artwork_changed:
                     self._artwork_id = media_state.artwork_id
@@ -326,3 +366,4 @@ def register_progress_handlers(api, scheduler: ProgressScheduler) -> None:
     api.onSetActive(scheduler.handle_set_active)
     api.onParamFromPlugin(scheduler.handle_property_settings)
     api.onDidReceiveSettings(scheduler.handle_settings)
+    api.onSendToPlugin(scheduler.handle_inspector_message)

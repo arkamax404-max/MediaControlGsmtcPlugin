@@ -53,7 +53,7 @@ NOW = datetime(2026, 8, 23, 12, 0, 15, tzinfo=timezone.utc)
 
 
 def health(**overrides):
-    return {"service": "d200-gsmtc-bridge", "api_major": 1, "api_minor": 0,
+    return {"service": "d200-gsmtc-bridge", "api_major": 1, "api_minor": 1,
             "status": "ready", "instance_id": INSTANCE_ID, **overrides}
 
 
@@ -571,7 +571,7 @@ class PythonProgressTests(unittest.TestCase):
         register_progress_handlers(api, scheduler)
         self.assertEqual({name: len(callbacks) for name, callbacks in api.handlers.items()}, {
             "onAdd": 1, "onClear": 1, "onSetActive": 1,
-            "onParamFromPlugin": 1, "onDidReceiveSettings": 1,
+            "onParamFromPlugin": 1, "onDidReceiveSettings": 1, "onSendToPlugin": 1,
         })
         api.handlers["onAdd"][0]({"uuid": ACTION_UUID, "context": "progress"})
         self.assertFalse(scheduler.handle_run({"uuid": "com.other.next", "context": "progress"}))

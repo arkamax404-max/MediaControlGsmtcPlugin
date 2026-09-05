@@ -34,7 +34,7 @@ def health(**overrides):
     return {
         "service": "d200-gsmtc-bridge",
         "api_major": 1,
-        "api_minor": 0,
+        "api_minor": 1,
         "status": "ready",
         "instance_id": INSTANCE_ID,
         **overrides,
@@ -189,6 +189,46 @@ class PythonTransportTests(unittest.TestCase):
                 self.assertEqual(command_request.data, b"{}")
                 self.assertEqual((health_timeout, command_timeout), (1.0, 1.0))
 
+    def test_mute_target_is_sent_as_bounded_json_body(self):
+        for command in ("volume-up", "volume-down", "mute-toggle"):
+            with self.subTest(command=command):
+                opener = RecordingOpener(
+                    [Response(payload=health()), Response(payload={"ok": True})])
+                result = BridgeClient(token_loader=lambda: TOKEN, opener=opener).execute(
+                    command, audio_target="system")
+
+                self.assertTrue(result.ok)
+                self.assertEqual(opener.calls[1][0].data, b'{"audio_target":"system"}')
+
+        unicode_target = "process:" + "\u97f3" * 128
+        opener = RecordingOpener([Response(payload=health()), Response(payload={"ok": True})])
+        result = BridgeClient(token_loader=lambda: TOKEN, opener=opener).execute(
+            "volume-up", audio_target=unicode_target)
+        self.assertTrue(result.ok)
+        self.assertEqual(json.loads(opener.calls[1][0].data), {"audio_target": unicode_target})
+        self.assertLessEqual(len(opener.calls[1][0].data), 1024)
+
+    def test_router_resolves_target_from_mute_context_only(self):
+        class Client:
+            def __init__(self): self.calls = []
+            def execute(self, command, cancelled=None, audio_target=None):
+                self.calls.append((command, audio_target))
+                return BridgeResult(command, "ok")
+
+        client = Client()
+        router = TransportRouter(client)
+        router.configure_runtime(lambda _event: False, lambda: None,
+                                 lambda event: "system"
+                                 if event.get("context") in ("mute", "volume") else None)
+        router.start()
+        router.handle_run({"uuid": f"{PLUGIN_UUID}.mute-toggle", "context": "mute"})
+        router.handle_run({"uuid": f"{PLUGIN_UUID}.volume-up", "context": "volume"})
+        router.handle_run({"uuid": f"{PLUGIN_UUID}.next", "context": "next"})
+        self.assertTrue(wait_for(lambda: len(client.calls) == 3))
+        self.assertEqual(client.calls, [("mute-toggle", "system"),
+                                        ("volume-up", "system"), ("next", None)])
+        self.assertTrue(router.stop())
+
     def test_intermediate_audio_error_does_not_block_next_fifo_command(self):
         class SequenceClient:
             def __init__(self):
@@ -290,6 +330,7 @@ class PythonTransportTests(unittest.TestCase):
     def test_incompatible_or_malformed_health_suppresses_command(self):
         for payload, expected in (
             (health(api_major=2), "incompatible"),
+            (health(api_minor=0), "incompatible"),
             (health(status="starting"), "unavailable"),
             (health(instance_id="bad"), "unavailable"),
             (health(api_minor=True), "unavailable"),

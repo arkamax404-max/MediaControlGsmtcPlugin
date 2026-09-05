@@ -17,7 +17,7 @@ BRIDGE_ORIGIN = "http://127.0.0.1:43821"
 BRIDGE_TIMEOUT_SECONDS = 1.0
 REQUEST_ACQUIRE_POLL_SECONDS = 0.05
 API_MAJOR = 1
-MIN_API_MINOR = 0
+MIN_API_MINOR = 1
 MAX_ARTWORK_BODY_BYTES = 4_001_000
 INSTANCE_ID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
@@ -114,23 +114,28 @@ class BridgeClient:
         self._request_available.set()
         self._request_active = False
 
-    def execute(self, command: str, cancelled: Callable[[], bool] | None = None) -> BridgeResult:
+    def execute(self, command: str, cancelled: Callable[[], bool] | None = None,
+                audio_target: str | None = None) -> BridgeResult:
         if not self._claim_request(cancelled):
             return BridgeResult(command, "stopped")
         try:
-            return self._execute(command)
+            return self._execute(command, audio_target)
         finally:
             self._release_request()
 
-    def _execute(self, command: str, cancelled: Callable[[], bool] | None = None) -> BridgeResult:
+    def _execute(self, command: str, audio_target: str | None = None) -> BridgeResult:
         if command not in COMMAND_PATHS:
             return BridgeResult(str(command), "unsupported")
         compatibility, token, instance_id, status_code = self._compatibility()
         if compatibility != "compatible":
             return BridgeResult(command, compatibility, status_code)
+        body = ({"audio_target": audio_target}
+                if command in ("volume-up", "volume-down", "mute-toggle")
+                and audio_target is not None else {})
         request = Request(
             self.origin + COMMAND_PATHS[command],
-            data=b"{}",
+            data=json.dumps(body, ensure_ascii=False,
+                            separators=(",", ":")).encode("utf-8"),
             method="POST",
             headers={
                 "Authorization": f"Bearer {token}",

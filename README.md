@@ -82,6 +82,13 @@ right after installation.
 
 Assign the desired actions from the `Media Control for D200` category to D200 keys.
 
+For `Volume Up`, `Volume Down`, or `Mute Toggle`, select the key in Studio and choose
+**Audio source** in its settings. The list contains **System volume** plus application
+sessions currently active on the default Windows output. Each key remembers its own
+choice: select the same source on all three keys for a unified volume control, or assign
+different sources when desired. If an application is missing, start audio in it and wait
+for the list to refresh.
+
 ## The Twelve Actions
 
 | Action | Press behavior | Key display |
@@ -90,9 +97,9 @@ Assign the desired actions from the `Media Control for D200` category to D200 ke
 | Previous | Previous track | Transport icon with `Previous` label |
 | Play/Pause | Toggle play/pause | `Pause` icon while playing, `Play` icon while paused |
 | Next | Next track | Transport icon with `Next` label |
-| Volume Up | Spotify volume +5 points | Volume icon with the current percentage |
-| Volume Down | Spotify volume −5 points | Volume icon with the current percentage |
-| Mute Toggle | Mute or unmute Spotify | Generated key: volume percentage at the top, speaker icon below |
+| Volume Up | Selected source volume +5 points | Volume icon with the selected percentage |
+| Volume Down | Selected source volume −5 points | Volume icon with the selected percentage |
+| Mute Toggle | Mute or unmute the selected source | Generated key: selected volume percentage at the top, speaker icon below |
 | Track Progress | Cycle time mode | Circular progress arc with the selected time |
 | Artwork Top Left | None (display only) | Top-left 196×196 quadrant of the artwork |
 | Artwork Top Right | None (display only) | Top-right quadrant of the artwork |
@@ -120,22 +127,23 @@ the artwork. Previous and Next keep static icons with their labels.
 
 ### Volume and mute
 
-The volume actions operate only on Core Audio sessions owned by `Spotify.exe`. They
-never change the Windows master volume, endpoint volume, other applications, or media
-playback. Volume changes by five percentage points per press, clamps to 0-100%, and
-preserves mute. Mute Toggle applies one aggregate rule to all current Spotify sessions:
-mute all if any is unmuted, otherwise unmute all.
+Volume Up, Volume Down, and Mute Toggle each have an Audio source selector in Studio.
+It lists the Windows master volume and the application audio sessions currently present
+on the default render endpoint. Each button stores its own selection, so the three can
+use the same source or different sources. Spotify remains the default for existing keys.
+Volume changes by five percentage points per press, clamps to 0-100%, and preserves
+mute. When a process owns multiple sessions, Mute Toggle mutes all if any is unmuted,
+otherwise it unmutes all.
 
 Volume Up and Volume Down show the current percentage, `Muted`, `Mixed`, `No audio`, or
-`Offline`. Mute Toggle renders a generated key image with the Spotify volume percentage
+`Offline`. Mute Toggle renders a generated key image with the selected source percentage
 at the top and a speaker icon below — the muted speaker while audio is active and the
 unmuted speaker while muted — switching to `Muted`, `Mixed`, or `No audio` states as
 appropriate.
 
-`pycaw`'s stable `GetAllSessions()` API enumerates sessions on the default render
-endpoint. Spotify sessions playing through another render endpoint are therefore outside
-this implementation; the bridge intentionally does not use lower-level unsafe COM
-enumeration or `IAudioEndpointVolume` as a fallback.
+`pycaw` enumerates application sessions and accesses the master volume on the default
+render endpoint. Sources playing through another render endpoint are outside this
+implementation.
 
 ### Artwork Mosaic
 
@@ -197,8 +205,9 @@ transitions may temporarily expose no duration; the key then shows `No timeline`
 | Wrong media app is shown | Start playback in Spotify Desktop. Spotify sessions take precedence over the Windows current session. |
 | Plugin is absent in Studio | Import the whole `.ulanziPlugin` folder; confirm Studio is at least 2.1.4. |
 | State stops changing | Restart the bridge. State older than 15 seconds is shown as offline rather than as current. |
-| Volume key shows `No audio` | Start Spotify Desktop and ensure it has a Core Audio session on the default render endpoint. |
-| Volume key shows `Mixed` | Multiple Spotify sessions disagree on volume or mute; the next action still applies once to each accessible session. |
+| Volume key shows `No audio` | Start the selected application and ensure it has a Core Audio session on the default render endpoint, or select System volume. |
+| An audio key shows `Mixed` | Multiple sessions for the selected application disagree on volume or mute; the next action still applies once to each accessible session. |
+| A source is absent from an audio selector | Start audio in that application, then reopen or wait for the selector to refresh. Only current sessions on the default render endpoint are listed. |
 | Progress key shows `No timeline` | GSMTC did not publish a positive finite duration yet. Change tracks or wait for the Spotify session timeline event. |
 | Progress colors do not save | Enter a complete `#RRGGBB` value in the visible HEX field; invalid values revert to defaults. |
 | Progress freezes while playing | Confirm the key is active in the current Studio profile and `/state` reports `timeline_available: true` and `is_playing: true`. |
@@ -216,7 +225,8 @@ The bridge subscribes to GSMTC media, playback, and timeline changes and perform
 five-second local refresh for freshness and recovery. Timeline-only events do not reread
 media properties or thumbnails. Media, timeline, and audio are cached independently:
 `available` remains GSMTC media state, while `audio_available`, `volume_percent`,
-`is_muted`, `audio_session_count`, and `audio_mixed` describe Spotify Core Audio.
+`is_muted`, `audio_session_count`, and `audio_mixed` describe Spotify Core Audio, while
+`audio_sources` contains the current selectable process groups and system volume state.
 `timeline_available`, `position_seconds`, `duration_seconds`, `playback_rate`, and
 `position_updated_at` describe the normalized timeline anchor.
 

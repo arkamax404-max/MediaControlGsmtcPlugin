@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 MAX_TEXT_LENGTH = 160
 ARTWORK_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+MAX_AUDIO_SOURCES = 64
 
 
 def _text(value):
@@ -17,6 +18,26 @@ def _text(value):
 
 def _artwork_id(value):
     return value if isinstance(value, str) and ARTWORK_ID_PATTERN.fullmatch(value) else None
+
+
+@dataclass(frozen=True)
+class AudioSourceState:
+    target: str
+    label: str
+    volume_percent: int
+    is_muted: bool
+    session_count: int
+    mixed: bool
+
+    def public(self):
+        return {
+            "target": self.target,
+            "label": self.label,
+            "volume_percent": self.volume_percent,
+            "is_muted": self.is_muted,
+            "session_count": self.session_count,
+            "mixed": self.mixed,
+        }
 
 
 @dataclass(frozen=True)
@@ -37,6 +58,7 @@ class MediaState:
     is_muted: bool = False
     audio_session_count: int = 0
     audio_mixed: bool = False
+    audio_sources: tuple[AudioSourceState, ...] = ()
     revision: int = 0
     updated_at: str = ""
 
@@ -58,6 +80,7 @@ class MediaState:
             "is_muted": self.is_muted,
             "audio_session_count": self.audio_session_count,
             "audio_mixed": self.audio_mixed,
+            "audio_sources": [source.public() for source in self.audio_sources],
             "revision": self.revision,
             "updated_at": self.updated_at,
         }
@@ -107,6 +130,29 @@ def normalize_state(raw):
     )
 
 
+def normalize_audio_sources(raw):
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    sources = []
+    for item in raw[:MAX_AUDIO_SOURCES]:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        label = _text(item.get("label"))
+        volume = item.get("volume_percent")
+        if (not isinstance(target, str) or not target or not label
+                or not isinstance(volume, int) or isinstance(volume, bool)):
+            continue
+        sources.append(AudioSourceState(
+            target[:160], label, max(0, min(100, volume)),
+            item.get("is_muted") is True,
+            max(0, int(item.get("session_count", 0)))
+            if isinstance(item.get("session_count", 0), int) else 0,
+            item.get("mixed") is True,
+        ))
+    return tuple(sources)
+
+
 class MediaStateCache:
     def __init__(self, clock=None):
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -132,6 +178,7 @@ class MediaStateCache:
                 is_muted=self._state.is_muted,
                 audio_session_count=self._state.audio_session_count,
                 audio_mixed=self._state.audio_mixed,
+                audio_sources=self._state.audio_sources,
             )
             return self._replace(candidate)
 
@@ -156,6 +203,7 @@ class MediaStateCache:
                 if available
                 else 0,
                 audio_mixed=bool(raw.get("audio_mixed")) if available else False,
+                audio_sources=normalize_audio_sources(raw.get("audio_sources")),
             )
             return self._replace(candidate)
 

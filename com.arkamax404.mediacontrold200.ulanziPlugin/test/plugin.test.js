@@ -25,6 +25,11 @@ import {
   svgDataUri,
 } from "../src/plugin.js";
 import {
+  DEFAULT_AUDIO_TARGET,
+  normalizeAudioSources,
+  normalizeAudioTarget,
+} from "../property-inspector/mute/inspector.js";
+import {
   normalizeInspectorSettings,
   serializeInspectorSettings,
 } from "../property-inspector/progress/inspector.js";
@@ -69,10 +74,12 @@ function createSdk() {
     onParamFromApp(fn) { handlers.paramfromapp = fn; },
     onParamFromPlugin(fn) { handlers.paramfromplugin = fn; },
     onDidReceiveSettings(fn) { handlers.settings = fn; },
+    onSendToPlugin(fn) { handlers.sendtoplugin = fn; },
     onClose(fn) { handlers.close = fn; },
     setPathIcon(...args) { calls.push(["path", ...args]); },
     setBaseDataIcon(...args) { calls.push(["base64", ...args]); },
     setSettings(...args) { calls.push(["settings", ...args]); },
+    sendToPropertyInspector(...args) { calls.push(["inspector", ...args]); },
   };
 }
 
@@ -104,7 +111,7 @@ function state(overrides = {}) {
 }
 
 function health(overrides = {}) {
-  return { service: "d200-gsmtc-bridge", api_major: 1, api_minor: 0,
+  return { service: "d200-gsmtc-bridge", api_major: 1, api_minor: 1,
     status: "ready", instance_id: INSTANCE_ID, ...overrides };
 }
 
@@ -228,7 +235,7 @@ test("reevaluates compatibility, clears stale artwork, and recovers", async () =
 });
 
 test("fresh command health suppresses every unavailable or incompatible case", async () => {
-  const cases = [[health({ api_major: 2 }), "incompatible"], [health({ api_minor: -1 }), "unavailable"],
+  const cases = [[health({ api_major: 2 }), "incompatible"], [health({ api_minor: 0 }), "incompatible"], [health({ api_minor: -1 }), "unavailable"],
     [health({ service: "wrong" }), "unavailable"], [health({ api_major: 1.5 }), "unavailable"], [health({ api_minor: "0" }), "unavailable"],
     [health({ api_major: Number.MAX_SAFE_INTEGER }), "unavailable"], [health({ api_minor: 65536 }), "unavailable"],
     [health({ instance_id: "bad" }), "unavailable"], [health({ status: "starting" }), "unavailable"],
@@ -1070,6 +1077,41 @@ test("targets every audio command at its fixed loopback endpoint", async () => {
   ]);
 });
 
+test("normalizes mute sources and sends the selected target", async () => {
+  assert.equal(normalizeAudioTarget("process:SPOTIFY.EXE"), DEFAULT_AUDIO_TARGET);
+  assert.equal(normalizeAudioTarget("process:bad/path.exe"), null);
+  assert.equal(normalizeAudioTarget(`process:${"\u{1F3B5}".repeat(70)}.exe`),
+    `process:${"\u{1F3B5}".repeat(70)}.exe`);
+  assert.equal(normalizeAudioTarget(`process:${"\u{1F3B5}".repeat(129)}`), null);
+  assert.deepEqual(normalizeAudioSources([
+    { target: "system", label: "System volume" },
+    { target: "process:Browser.EXE", label: "Browser" },
+    { target: "process:browser.exe", label: "Duplicate" },
+  ]), [
+    { target: "system", label: "System volume" },
+    { target: "process:browser.exe", label: "Browser" },
+  ]);
+
+  const requests = [];
+  const sdk = createSdk();
+  const plugin = createPlugin({ sdk, fetchImpl: async (url, options) => {
+    requests.push([url, options]);
+    return response(state());
+  }, now: () => Date.parse("2026-08-23T12:00:01.000Z") });
+  plugin.add({ uuid: "com.arkamax404.ulanzi.mediacontrol.mute-toggle",
+    context: "mute", param: { audioTarget: "system" } });
+  await plugin.run({ context: "mute" });
+
+  const command = requests.find(([url]) => url.endsWith("/command/mute-toggle"));
+  assert.equal(command[1].body, '{"audio_target":"system"}');
+  plugin.contexts.set("volume", { action: "volume-up", active: true,
+    settings: null, audioTarget: "process:browser.exe" });
+  await plugin.run({ context: "volume" });
+  const volumeCommand = requests.find(([url]) => url.endsWith("/command/volume-up"));
+  assert.equal(volumeCommand[1].body, '{"audio_target":"process:browser.exe"}');
+  plugin.stop();
+});
+
 test("renders volume, mute, mixed, no-audio, and offline states", () => {
   const sdk = createSdk();
   const plugin = createPlugin({ sdk });
@@ -1161,7 +1203,7 @@ test("manifest declares approved identity, functional entrypoint, and unique act
   assert.equal(manifest.Category, "Media Control for D200");
   assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
-  assert.equal(manifest.Version, "1.2.4");
+  assert.equal(manifest.Version, "1.3.0");
   const uuids = [manifest.UUID, ...manifest.Actions.map(({ UUID }) => UUID)];
   assert.equal(new Set(uuids).size, uuids.length);
   assert.deepEqual(manifest.Actions.map(({ UUID }) => UUID), [

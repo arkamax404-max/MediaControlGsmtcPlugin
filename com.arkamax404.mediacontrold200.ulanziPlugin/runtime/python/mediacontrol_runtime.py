@@ -279,7 +279,8 @@ class Runtime:
                     configure = getattr(self.router, "configure_runtime", None)
                     if configure is not None:
                         configure(self.progress_scheduler.handle_run,
-                                  self.progress_scheduler.request_poll)
+                                  self.progress_scheduler.request_poll,
+                                  self.now_playing_model.audio_target_from_event)
                     self.progress_scheduler.start()
                     register_progress_handlers(api, self.progress_scheduler)
                 api.connect(PLUGIN_UUID, argv=list(arguments.raw))

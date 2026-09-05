@@ -835,13 +835,15 @@ class ServerTests(unittest.TestCase):
         self.loop_thread = threading.Thread(target=self.loop.run_forever)
         self.loop_thread.start()
         self.commands = []
+        self.audio_targets = []
         self.lifecycle = bridge_main.CompanionLifecycle()
 
         async def commander(action):
             self.commands.append(action)
             return True
 
-        def audio_commander(action):
+        def audio_commander(action, _target):
+            self.audio_targets.append((action, _target))
             if action == "volume-up":
                 return AudioCommandResult(
                     "ok", 1, 0,
@@ -928,6 +930,20 @@ class ServerTests(unittest.TestCase):
                 error.exception.close()
             self.assertEqual(payload["status"], expected)
 
+        request = Request(f"{self.base_url}/command/mute-toggle",
+                          data=b'{"audio_target":"system"}', method="POST")
+        with self.assertRaises(HTTPError) as error:
+            self.open(request)
+        error.exception.close()
+        request = Request(f"{self.base_url}/command/volume-up",
+                          data=b'{"audio_target":"system"}', method="POST")
+        with self.open(request):
+            pass
+        self.assertEqual(self.audio_targets[-2:], [
+            ("mute-toggle", "system"),
+            ("volume-up", "system"),
+        ])
+
         request = Request(f"{self.base_url}/state", method="PUT")
         with self.assertRaises(HTTPError) as error:
             self.open(request)
@@ -952,6 +968,7 @@ class ServerTests(unittest.TestCase):
                 "private, max-age=31536000, immutable",
             )
         self.assertLessEqual(len(body), MAX_BUNDLE_BYTES)
+
         self.assertEqual(payload, self.variants.public())
         self.assertEqual(payload["id"], artwork_id)
         self.assertEqual(len(payload["tiles"]), 4)
@@ -978,6 +995,23 @@ class ServerTests(unittest.TestCase):
             self.open(write)
         self.assertEqual(error.exception.code, 404)
         error.exception.close()
+
+    def test_maximum_unicode_audio_source_inventory_fits_state_response(self):
+        sources = [{
+            "target": "process:" + "\u97f3" * 126 + f"{index:02d}",
+            "label": "\u97f3" * 48,
+            "volume_percent": 50,
+            "is_muted": False,
+            "session_count": 1,
+            "mixed": False,
+        } for index in range(64)]
+        self.cache.update_audio({"audio_available": False, "audio_sources": sources})
+
+        with self.open(f"{self.base_url}/state") as response:
+            body = response.read()
+            payload = json.loads(body)
+        self.assertEqual(len(payload["audio_sources"]), 64)
+        self.assertLessEqual(len(body), MAX_STATE_RESPONSE_BYTES)
 
     def test_evicted_artwork_id_returns_404_without_exposing_other_ids(self):
         evicted_id = self.variants.artwork_id

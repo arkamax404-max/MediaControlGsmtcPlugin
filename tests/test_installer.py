@@ -86,7 +86,7 @@ class InstallerContractTests(unittest.TestCase):
 
     def test_version_source_drives_installer_contract(self):
         support = load_support()
-        self.assertEqual(support.companion_version(ROOT), "1.2.3")
+        self.assertEqual(support.companion_version(ROOT), "1.3.0")
         with self.assertRaises(ValueError): support.generate_include(["GSMTCD200Companion.exe"], "1.2")
         inno = INSTALLER.joinpath("companion.iss").read_text("utf-8")
         build = INSTALLER.joinpath("build_installer.ps1").read_text("utf-8")

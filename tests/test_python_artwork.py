@@ -31,6 +31,7 @@ from bridge_client import (  # noqa: E402
 from now_playing_action import (  # noqa: E402
     ACTION_UUID,
     AUDIO_ACTIONS,
+    AudioSource,
     DISPLAY_ACTION_UUIDS,
     MOSAIC_ACTIONS,
     MUTE_TOGGLE_UUID,
@@ -45,6 +46,7 @@ from now_playing_action import (  # noqa: E402
     normalize_media_snapshot,
     now_playing_text,
     unavailable_media_snapshot,
+    mute_toggle_data_uri,
 )
 
 
@@ -99,7 +101,7 @@ def mute_uri(label, waves=False):
 
 
 def health():
-    return {"service": "d200-gsmtc-bridge", "api_major": 1, "api_minor": 0,
+    return {"service": "d200-gsmtc-bridge", "api_major": 1, "api_minor": 1,
             "status": "ready", "instance_id": INSTANCE_ID}
 
 
@@ -555,7 +557,35 @@ console.log(JSON.stringify(values.map((title) => normalizeBridgeState({ ...base,
             offline = [model.render(requests[action], unavailable_media_snapshot(status))
                        for action in AUDIO_ACTIONS]
             self.assertEqual([(intent.method, intent.image, intent.text) for intent in offline],
-                             [("setPathIcon", "./assets/offline.svg", label)] * 3)
+                              [("setPathIcon", "./assets/offline.svg", label)] * 3)
+
+    def test_mute_context_uses_its_selected_audio_source(self):
+        model = NowPlayingActionModel()
+        spotify_request = model.add({"uuid": MUTE_TOGGLE_UUID, "context": "spotify"})[0]
+        system_request = model.add({"uuid": MUTE_TOGGLE_UUID, "context": "system",
+                                    "param": {"audioTarget": "system"}})[0]
+        volume_request = model.add({
+            "uuid": "com.arkamax404.ulanzi.mediacontrol.volume-up",
+            "context": "volume", "param": {"audioTarget": "system"},
+        })[0]
+        snapshot = MediaSnapshot(
+            True, True, True, "Track", "Artist", None, "ready", True, 25, False, False,
+            (AudioSource("system", "System volume", 80, True, 1, False),
+             AudioSource("process:spotify.exe", "spotify", 25, False, 1, False)),
+        )
+
+        self.assertEqual(model.render(spotify_request, snapshot).image,
+                         mute_toggle_data_uri("25%", False))
+        self.assertEqual(model.render(system_request, snapshot).image,
+                         mute_toggle_data_uri("Muted", True))
+        volume_intent = model.render(volume_request, snapshot)
+        self.assertEqual((volume_intent.image, volume_intent.text),
+                         ("./assets/volume-up.svg", "Muted"))
+        changed = model.receive_settings({"context": "spotify",
+                                          "settings": {"audioTarget": "system"}})[0]
+        self.assertEqual(model.audio_target_from_event({"context": "spotify"}), "system")
+        self.assertEqual(model.render(changed, snapshot).image,
+                         mute_toggle_data_uri("Muted", True))
 
     def test_mute_toggle_composite_determinism_dedup_and_xml_structure(self):
         model = NowPlayingActionModel()

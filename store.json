@@ -4,7 +4,7 @@
     "resources/store/banner-actions.png",
     "resources/store/banner-volume.png"
   ],
-  "longDescription": "Media Control for D200 brings Spotify Desktop controls to Ulanzi D200 on Windows through a local companion bridge. It shows Now Playing artwork in color while playing and grayscale while paused, with title and artist; transport controls with live Play/Pause state; Spotify-only volume and mute state; a circular track progress key with per-key color settings; and a four-key artwork mosaic. Everything runs on the same machine through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The companion bridge must be installed and running for the plugin to display live media state.",
+  "longDescription": "Media Control for D200 brings Spotify Desktop controls to Ulanzi D200 on Windows through a local companion bridge. It shows Now Playing artwork in color while playing and grayscale while paused, with title and artist; transport controls with live Play/Pause state; selectable per-key audio control for the Windows system volume or any currently active application session; a circular track progress key with per-key color settings; and a four-key artwork mosaic. Volume Up, Volume Down, and Mute Toggle each remember their own source, so they can control the same application or different targets. Everything runs on the same machine through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The companion bridge must be installed and running for the plugin to display live media state.",
   "deviceTypes": [
     "deck"
   ],
@@ -12,6 +12,8 @@
     "spotify",
     "media",
     "music",
+    "volume",
+    "audio",
     "windows",
     "d200"
   ]

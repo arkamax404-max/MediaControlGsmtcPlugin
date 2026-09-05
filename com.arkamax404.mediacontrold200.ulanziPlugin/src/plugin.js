@@ -3,7 +3,7 @@ import nodePath from "node:path";
 
 export const BRIDGE_ORIGIN = "http://127.0.0.1:43821";
 export const API_MAJOR = 1;
-export const MIN_API_MINOR = 0;
+export const MIN_API_MINOR = 1;
 export const POLL_INTERVAL_MS = 1500;
 export const ANIMATION_INTERVAL_MS = 1000;
 export const STATE_MAX_AGE_MS = 15000;
@@ -15,6 +15,7 @@ export const DEFAULT_PROGRESS_SETTINGS = Object.freeze({
   backgroundColor: "#000000",
   strokeWidth: 14,
 });
+export const DEFAULT_AUDIO_TARGET = "process:spotify.exe";
 
 const ACTIONS = Object.freeze({
   nowplaying: { command: "toggle", icon: "./assets/music.svg" },
@@ -34,6 +35,8 @@ const ACTIONS = Object.freeze({
   "mute-toggle": { command: "mute-toggle", icon: "./assets/mute.svg" },
   progress: { command: null, icon: "./assets/progress.svg" },
 });
+
+const isAudioAction = (action) => action === "mute-toggle" || action?.startsWith("volume-");
 
 const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const ARTWORK_PATTERN = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/;
@@ -105,6 +108,27 @@ export function normalizeProgressSettings(raw = {}) {
   };
 }
 
+export function normalizeAudioTarget(value) {
+  if (value === "system") return value;
+  if (typeof value !== "string" || !value.startsWith("process:")) return null;
+  const process = value.slice(8).trim().toLocaleLowerCase("en-US");
+  if (!process || Array.from(process).length > 128 || /[\\/\x00-\x1f]/.test(process)) return null;
+  return `process:${process}`;
+}
+
+function normalizeAudioSources(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 64).flatMap((item) => {
+    const target = normalizeAudioTarget(item?.target);
+    const label = String(item?.label || "").trim().slice(0, 48);
+    const volumePercent = Number.isInteger(item?.volume_percent)
+      ? Math.max(0, Math.min(100, item.volume_percent)) : null;
+    if (!target || !label || volumePercent === null) return [];
+    return [{ target, label, volumePercent, isMuted: item.is_muted === true,
+      audioMixed: item.mixed === true }];
+  });
+}
+
 export function normalizeBridgeState(payload, now = Date.now()) {
   const updated = Date.parse(payload?.updated_at || "");
   const fresh = Number.isFinite(updated) && now >= updated && now - updated <= STATE_MAX_AGE_MS;
@@ -133,6 +157,7 @@ export function normalizeBridgeState(payload, now = Date.now()) {
       : null,
     isMuted: payload.is_muted === true,
     audioMixed: payload.audio_mixed === true,
+    audioSources: normalizeAudioSources(payload.audio_sources),
     timelineAvailable,
     positionSeconds: timelineAvailable ? Math.min(position, duration) : 0,
     durationSeconds: timelineAvailable ? duration : 0,
@@ -359,6 +384,7 @@ export class SpotifyGSMTCPlugin {
     this.sdk.onParamFromApp((event) => this.receiveSettings(event, false));
     this.sdk.onParamFromPlugin((event) => this.receiveSettings(event, true));
     this.sdk.onDidReceiveSettings?.((event) => this.receiveSettings(event, false));
+    this.sdk.onSendToPlugin?.((event) => this.receiveInspectorMessage(event));
     this.sdk.onClose?.(() => this.stop());
   }
 
@@ -373,11 +399,14 @@ export class SpotifyGSMTCPlugin {
   add(event) {
     const action = actionFromEvent(event);
     if (!action || !event?.context) return;
-    const settings = normalizeProgressSettings(event.param);
+    const settings = action === "progress" ? normalizeProgressSettings(event.param) : null;
+    const audioTarget = isAudioAction(action)
+      ? normalizeAudioTarget(event.param?.audioTarget) || DEFAULT_AUDIO_TARGET : null;
     this.contexts.set(event.context, {
       action,
       active: true,
       settings,
+      audioTarget,
       ...(action === "progress" ? { mode: "remaining" } : {}),
     });
     if (action === "progress" && !settingsMatch(event.param, settings)) {
@@ -410,8 +439,16 @@ export class SpotifyGSMTCPlugin {
 
   receiveSettings(event, persist) {
     const entry = this.entry(event?.context);
-    if (!entry || entry.action !== "progress") return;
+    if (!entry) return;
     const raw = event.param || event.settings || {};
+    if (isAudioAction(entry.action)) {
+      entry.audioTarget = normalizeAudioTarget(raw.audioTarget) || DEFAULT_AUDIO_TARGET;
+      if (persist) this.sdk.setSettings?.({ audioTarget: entry.audioTarget }, event.context);
+      this.rendered.delete(event.context);
+      this.render(event.context, entry.action, this.lastState, true);
+      return;
+    }
+    if (entry.action !== "progress") return;
     entry.settings = normalizeProgressSettings(raw);
     if (persist || !settingsMatch(raw, entry.settings)) {
       this.sdk.setSettings?.(entry.settings, event.context);
@@ -440,7 +477,8 @@ export class SpotifyGSMTCPlugin {
       const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/command/${command}`, {
         method: "POST",
         headers: this.requestHeaders(snapshot, { "Content-Type": "application/json" }),
-        body: "{}",
+        body: JSON.stringify(isAudioAction(action)
+          ? { audio_target: entry?.audioTarget || DEFAULT_AUDIO_TARGET } : {}),
         signal: AbortSignal.timeout(1000),
       });
       if (!response.ok) return false;
@@ -485,6 +523,7 @@ export class SpotifyGSMTCPlugin {
       const nextState = normalizeBridgeState(await response.json(), this.now());
       const artworkChanged = nextState.artworkId !== this.lastState.artworkId;
       this.lastState = nextState;
+      this.publishAudioSources();
       if (artworkChanged) {
         this.artworkBundle = null;
         this.renderAll();
@@ -522,6 +561,25 @@ export class SpotifyGSMTCPlugin {
     for (const [context] of this.contexts) {
       const entry = this.entry(context);
       if (entry) this.render(context, entry.action, this.lastState);
+    }
+  }
+
+  receiveInspectorMessage(event) {
+    const entry = this.entry(event?.context);
+    if (!isAudioAction(entry?.action) || event?.payload?.type !== "requestAudioSources") return;
+    this.publishAudioSources(event.context);
+    void this.poll();
+  }
+
+  publishAudioSources(onlyContext = null) {
+    const payload = { audioSources: (this.lastState.audioSources || []).map(({ target, label }) => (
+      { target, label }
+    )) };
+    for (const [context] of this.contexts) {
+      if ((onlyContext === null || context === onlyContext)
+        && isAudioAction(this.entry(context)?.action)) {
+        this.sdk.sendToPropertyInspector?.(payload, context);
+      }
     }
   }
 
@@ -656,6 +714,12 @@ export class SpotifyGSMTCPlugin {
       );
       else this.sdk.setPathIcon(context, mosaic.icon, mosaic.title);
       return;
+    }
+    if (isAudioAction(action) && Array.isArray(state.audioSources)) {
+      const target = entry?.audioTarget || DEFAULT_AUDIO_TARGET;
+      const source = state.audioSources.find((item) => item.target === target);
+      state = source ? { ...state, audioAvailable: true, ...source }
+        : { ...state, audioAvailable: false, volumePercent: null, isMuted: false, audioMixed: false };
     }
     const signature = [state.online, state.available, state.audioAvailable, state.revision,
       state.isPlaying, state.volumePercent, state.isMuted, state.audioMixed,

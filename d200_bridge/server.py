@@ -11,8 +11,8 @@ from .paths import validate_token
 
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 43821
-MAX_REQUEST_BODY = 256
-MAX_STATE_RESPONSE_BYTES = 4096
+MAX_REQUEST_BODY = 1024
+MAX_STATE_RESPONSE_BYTES = 131072
 ARTWORK_PATH_PATTERN = re.compile(r"^/artwork/([0-9a-f]{64})$")
 COMMAND_PATHS = {
     "/command/previous": "previous",
@@ -79,10 +79,17 @@ def create_server(
             if length < 0 or length > MAX_REQUEST_BODY:
                 self._json(413, {"error": "request_too_large"})
                 return
-            if length:
-                self.rfile.read(length)
+            body = self.rfile.read(length) if length else b"{}"
             if audio_action is not None:
-                self._audio_command(audio_action)
+                try:
+                    payload = json.loads(body)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._json(400, {"error": "invalid_json"})
+                    return
+                if not isinstance(payload, dict):
+                    self._json(400, {"error": "invalid_payload"})
+                    return
+                self._audio_command(audio_action, payload)
                 return
             future = asyncio.run_coroutine_threadsafe(commander(action), loop)
             try:
@@ -92,12 +99,16 @@ def create_server(
                 return
             self._json(200 if accepted else 409, {"ok": accepted})
 
-        def _audio_command(self, action):
+        def _audio_command(self, action, payload):
             if audio_commander is None:
                 self._json(503, {"ok": False, "status": "failed"})
                 return
             try:
-                result = audio_commander(action)
+                target = payload.get("audio_target", "process:spotify.exe")
+                result = audio_commander(action, target)
+            except ValueError:
+                self._json(400, {"ok": False, "status": "invalid_target"})
+                return
             except Exception:
                 self._json(503, {"ok": False, "status": "failed"})
                 return
@@ -178,7 +189,8 @@ def create_server(
             return True
 
         def _json(self, status, payload, headers=None, max_bytes=None):
-            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            body = json.dumps(payload, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")
             if max_bytes is not None and len(body) > max_bytes:
                 status = 500
                 body = b'{"error":"response_too_large"}'

@@ -96,11 +96,25 @@ class PackagingContractTests(unittest.TestCase):
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith(".progress")
             )
+            mute_index = next(
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith(".mute-toggle")
+            )
+            volume_indexes = {
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith((".volume-up", ".volume-down"))
+            }
             self.assertTrue(all("PropertyInspectorPath" not in action
                                 for index, action in enumerate(prepared["Actions"])
-                                if index != progress_index))
+                                if index not in {progress_index, mute_index, *volume_indexes}))
             self.assertEqual(prepared["Actions"][progress_index]["PropertyInspectorPath"],
                              preparer.PROPERTY_INSPECTOR_FILES[0])
+            self.assertEqual(prepared["Actions"][mute_index]["PropertyInspectorPath"],
+                             preparer.PROPERTY_INSPECTOR_FILES[2])
+            self.assertEqual(
+                {prepared["Actions"][index]["PropertyInspectorPath"] for index in volume_indexes},
+                set(preparer.PROPERTY_INSPECTOR_FILES[4:6]),
+            )
             referenced_assets = {
                 prepared["Icon"],
                 prepared["CategoryIcon"],
@@ -152,13 +166,21 @@ class PackagingContractTests(unittest.TestCase):
                 (*preparer.PROPERTY_INSPECTOR_FILES,
                  *preparer.PROPERTY_INSPECTOR_VENDOR_FILES)
             ))
-            html = (target / preparer.PROPERTY_INSPECTOR_FILES[0]).read_text("utf-8")
-            sources = re.findall(r'<script(?:\s+type="module")?\s+src="([^"]+)"', html)
-            parent = Path(preparer.PROPERTY_INSPECTOR_FILES[0]).parent
-            self.assertEqual(
-                {(target / parent / source).resolve().relative_to(target.resolve()).as_posix()
-                 for source in sources}, inspector_files - {preparer.PROPERTY_INSPECTOR_FILES[0]},
-            )
+            for html_name, script_name in ((preparer.PROPERTY_INSPECTOR_FILES[0],
+                                             preparer.PROPERTY_INSPECTOR_FILES[1]),
+                                            (preparer.PROPERTY_INSPECTOR_FILES[2],
+                                             preparer.PROPERTY_INSPECTOR_FILES[3]),
+                                            (preparer.PROPERTY_INSPECTOR_FILES[4],
+                                             preparer.PROPERTY_INSPECTOR_FILES[3]),
+                                            (preparer.PROPERTY_INSPECTOR_FILES[5],
+                                             preparer.PROPERTY_INSPECTOR_FILES[3])):
+                html = (target / html_name).read_text("utf-8")
+                sources = re.findall(r'<script(?:\s+type="module")?\s+src="([^"]+)"', html)
+                parent = Path(html_name).parent
+                resolved = {(target / parent / source).resolve().relative_to(
+                    target.resolve()).as_posix() for source in sources}
+                self.assertEqual(resolved,
+                                 {*preparer.PROPERTY_INSPECTOR_VENDOR_FILES, script_name})
             self.assertFalse((target / "package-lock.json").exists())
             self.assertEqual(set(path.name for path in target.iterdir()),
                               {"assets", "manifest.json", "package.json", "property-inspector",

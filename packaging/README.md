@@ -75,14 +75,15 @@ Its manifest exposes exactly twelve Python actions: Now Playing, Previous,
 Play/Pause, Next, Volume Up, Volume Down, Mute Toggle, Track Progress, and the
 four artwork mosaic actions. The package includes the explicit music and offline
 fallbacks, every transport/audio asset, the four artwork tile icons, and the
-progress icon, inspector, and five browser SDK scripts referenced by that
-inspector. All twelve actions use the existing authenticated loopback bridge.
+progress icon, progress and audio-source inspectors, and five shared browser SDK scripts.
+All twelve actions use the existing authenticated loopback bridge.
 The runtime retains the validated color and grayscale artwork bundle foundation so
 Now Playing can render color while playing, grayscale while paused, and the
 identical color data URI when playback resumes, while the four mosaic actions
 render their exact artwork quadrants from the same bundle. Mute Toggle renders a
-generated composite showing the Spotify volume percent at the top plus the mute
-or unmute speaker icon; volume keys keep their host-rendered label; the dedicated
+generated composite showing the selected audio source volume percent at the top plus the mute
+or unmute speaker icon; all three audio actions retain independent source selections and
+volume keys keep their host-rendered label; the dedicated
 Play/Pause key switches between play and pause icons with playback state, and
 Previous/Next render their transport labels. Generated
 executables and transformed manifests do not belong in the repository, and this

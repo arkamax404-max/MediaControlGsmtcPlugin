@@ -61,6 +61,7 @@ class TransportRouter:
         self._accepting = False
         self._progress_run = None
         self._poll_notifier = None
+        self._audio_target_resolver = None
         self._worker = threading.Thread(
             target=self._work,
             name="ulanzi-bridge-transport",
@@ -92,17 +93,22 @@ class TransportRouter:
                 self.last_enqueue_result = BridgeResult(command, "stopped")
                 return False
             try:
-                self._queue.put_nowait(command)
+                target = (self._audio_target_resolver(event)
+                          if command in ("volume-up", "volume-down", "mute-toggle")
+                          and self._audio_target_resolver else None)
+                self._queue.put_nowait((command, target))
             except queue.Full:
                 self.last_enqueue_result = BridgeResult(command, "queue_full")
                 return False
             self.last_enqueue_result = BridgeResult(command, "queued")
             return True
 
-    def configure_runtime(self, progress_run, poll_notifier) -> None:
+    def configure_runtime(self, progress_run, poll_notifier,
+                          audio_target_resolver=None) -> None:
         with self._state_lock:
             self._progress_run = progress_run
             self._poll_notifier = poll_notifier
+            self._audio_target_resolver = audio_target_resolver
 
     def stop(self, timeout: float = WORKER_STOP_TIMEOUT_SECONDS) -> bool:
         with self._state_lock:
@@ -135,15 +141,16 @@ class TransportRouter:
             try:
                 if command is _STOP:
                     return
+                command, audio_target = command
                 if self._stop_event.is_set():
                     self.discarded_count += 1
                     self.last_result = BridgeResult(str(command), "discarded")
                     continue
                 try:
-                    self.last_result = self.client.execute(
-                        command,
-                        cancelled=self._stop_event.is_set,
-                    )
+                    arguments = {"cancelled": self._stop_event.is_set}
+                    if audio_target is not None:
+                        arguments["audio_target"] = audio_target
+                    self.last_result = self.client.execute(command, **arguments)
                 except Exception:
                     self.last_result = BridgeResult(str(command), "unavailable")
                 if self.last_result.ok:
