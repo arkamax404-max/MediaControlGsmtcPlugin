@@ -327,7 +327,7 @@ def _load_json_file(path: Path, limit: int, label: str) -> tuple[dict, bytes]:
 
 
 def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+    return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
 
 
 def load_request(request_path: Path, *, roots: ProductionRoots | None = None,

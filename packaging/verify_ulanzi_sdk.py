@@ -183,7 +183,10 @@ def inspect_sdk():
             and time.monotonic() < deadline:
         time.sleep(0.005)
     deadline = time.monotonic() + 1
-    while len(socket.messages) < 15 and time.monotonic() < deadline:
+    while not any(item.get("uuid") == LARGEITEM_ACTION_UUID
+                  for _, message in socket.messages
+                  for item in message.get("param", {}).get("statelist", [])) \
+            and time.monotonic() < deadline:
         time.sleep(0.005)
     if not socket.messages:
         raise RuntimeError("Integrated progress scheduler did not emit a display")
