@@ -11,7 +11,8 @@ from artwork_bundle import ArtworkBundleCache
 from now_playing_action import (AUDIO_ACTIONS, DEFAULT_AUDIO_TARGET, DISPLAY_ACTION_UUIDS,
                                  MediaSnapshot,
                                  NowPlayingActionModel, normalize_media_snapshot,
-                                 normalize_audio_target, unavailable_media_snapshot)
+                                 normalize_audio_target, TRANSPORT_DISPLAY,
+                                 unavailable_media_snapshot)
 from progress_action import (ACTION_UUID, PersistenceRequest, ProgressActionModel,
                              RenderRequest as ProgressRenderRequest)
 from progress_state import (ProgressState, extrapolate_position,
@@ -188,8 +189,14 @@ class ProgressScheduler:
                 {"context": context, "settings": raw})
             if persist and requests:
                 try:
-                    target = normalize_audio_target(raw.get("audioTarget"))
-                    self.api.setSettings({"audioTarget": target or DEFAULT_AUDIO_TARGET}, context)
+                    current = self.now_playing_model.context(context)
+                    settings = {"iconColor": current.icon_color}
+                    if current.action in AUDIO_ACTIONS:
+                        target = normalize_audio_target(raw.get("audioTarget"))
+                        settings["audioTarget"] = target or DEFAULT_AUDIO_TARGET
+                    elif current.action not in TRANSPORT_DISPLAY:
+                        return False
+                    self.api.setSettings(settings, context)
                 except Exception:
                     pass
             return self._change(requests)

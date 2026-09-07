@@ -91,6 +91,11 @@ choice: select the same source on all three keys for a unified volume control, o
 different sources when desired. If an application is missing, start audio in it and wait
 for the list to refresh.
 
+Volume Up, Volume Down, Mute Toggle, Previous, Play/Pause, and Next also expose an
+**Icon color** setting with synchronized picker and hexadecimal inputs. Each key remembers
+its own color; `#1DB954` remains the default. Play and Pause share the same selected color
+when playback state changes.
+
 ### Large display quick setup
 
 1. Open the target page and drag **Setup Large Display** to an unused normal key.
@@ -213,7 +218,8 @@ per press.
 Previous, Play/Pause, and Next send exactly one command per press through the shared
 command queue. The dedicated Play/Pause key reflects local playback state: it shows the
 pause icon while playing and the play icon while paused, so the state is visible without
-the artwork. Previous and Next keep static icons with their labels.
+the artwork. Previous and Next keep their transport glyphs and labels. Each transport key
+has an independent Icon color setting; Play/Pause uses one color for both states.
 
 ### Volume and mute
 
@@ -232,6 +238,10 @@ unmuted speaker while muted — switching to `Muted`, `Mixed`, or `No audio` sta
 appropriate. Its speaker is vertically aligned with Volume Up and Volume Down. Studio's
 normal key title remains optional and user-controlled, so it can label the selected audio
 source without the plugin forcing that text.
+
+Each audio key also stores its own Icon color. The picker and visible `#RRGGBB` field stay
+synchronized, invalid values return to `#1DB954`, and changing color does not alter the
+selected audio source.
 
 `pycaw` enumerates application sessions and accesses the master volume on the default
 render endpoint. Sources playing through another render endpoint are outside this

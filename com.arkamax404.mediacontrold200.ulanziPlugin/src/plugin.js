@@ -16,6 +16,7 @@ export const DEFAULT_PROGRESS_SETTINGS = Object.freeze({
   strokeWidth: 14,
 });
 export const DEFAULT_AUDIO_TARGET = "process:spotify.exe";
+export const DEFAULT_AUDIO_ICON_COLOR = "#1DB954";
 
 const ACTIONS = Object.freeze({
   nowplaying: { command: "toggle", icon: "./assets/music.svg" },
@@ -39,6 +40,8 @@ const ACTIONS = Object.freeze({
 });
 
 const isAudioAction = (action) => action === "mute-toggle" || action?.startsWith("volume-");
+const isTransportAction = (action) => ["previous", "toggle", "next"].includes(action);
+const isColorAction = (action) => isAudioAction(action) || isTransportAction(action);
 
 const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const ARTWORK_PATTERN = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/;
@@ -116,6 +119,49 @@ export function normalizeAudioTarget(value) {
   const process = value.slice(8).trim().toLocaleLowerCase("en-US");
   if (!process || Array.from(process).length > 128 || /[\\/\x00-\x1f]/.test(process)) return null;
   return `process:${process}`;
+}
+
+export function normalizeAudioIconColor(value) {
+  return COLOR_PATTERN.test(String(value || ""))
+    ? String(value).toUpperCase() : DEFAULT_AUDIO_ICON_COLOR;
+}
+
+export function renderAudioIconSvg(action, color = DEFAULT_AUDIO_ICON_COLOR) {
+  const safeColor = normalizeAudioIconColor(color);
+  const detail = action === "volume-up"
+    ? "M59 38a18 18 0 0 1 0 24M78 40v20M68 50h20"
+    : "M59 38a18 18 0 0 1 0 24M68 50h20";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 100 100">`
+    + `<rect width="100" height="100" rx="18" fill="#121212"/>`
+    + `<path fill="${safeColor}" d="M18 42h14l18-15v46L32 58H18z"/>`
+    + `<path fill="none" stroke="${safeColor}" stroke-width="7" stroke-linecap="round" d="${detail}"/></svg>`;
+}
+
+export function renderMuteToggleSvg(label, waves, color = DEFAULT_AUDIO_ICON_COLOR) {
+  const safeColor = normalizeAudioIconColor(color);
+  const glyph = waves
+    ? `<path fill="none" stroke="${safeColor}" stroke-width="7" stroke-linecap="round" d="M61 37a19 19 0 0 1 0 26M72 27a33 33 0 0 1 0 46"/>`
+    : `<path fill="none" stroke="${safeColor}" stroke-width="8" stroke-linecap="round" d="m64 39 22 22m0-22L64 61"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">`
+    + `<rect width="196" height="196" rx="35.28" fill="#121212"/>`
+    + `<text x="98" y="38" fill="#ffffff" font-family="Arial, sans-serif" font-size="38" font-weight="700" text-anchor="middle">${escapeXml(label)}</text>`
+    + `<g transform="translate(-5 -2) scale(2)"><path fill="${safeColor}" d="M17 42h15l19-16v48L32 58H17z"/>${glyph}</g></svg>`;
+}
+
+export function renderTransportIconSvg(action, playing = false,
+  color = DEFAULT_AUDIO_ICON_COLOR) {
+  const safeColor = normalizeAudioIconColor(color);
+  let path;
+  if (action === "toggle") {
+    path = playing ? "M29 24h15v52H29zm27 0h15v52H56z" : "m34 24 45 26-45 26z";
+  } else if (action === "previous") {
+    path = "M25 25h9v50h-9zm11 25 39-25v50z";
+  } else {
+    path = "m25 25 39 25-39 25zm41 0h9v50h-9z";
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 100 100">`
+    + `<rect width="100" height="100" rx="18" fill="#121212"/>`
+    + `<path fill="${safeColor}" d="${path}"/></svg>`;
 }
 
 function normalizeAudioSources(raw) {
@@ -521,11 +567,14 @@ export class SpotifyGSMTCPlugin {
       : action === "largeitem-nowplaying" ? normalizeLargeItemSettings(event.param) : null;
     const audioTarget = isAudioAction(action)
       ? normalizeAudioTarget(event.param?.audioTarget) || DEFAULT_AUDIO_TARGET : null;
+    const iconColor = isColorAction(action)
+      ? normalizeAudioIconColor(event.param?.iconColor) : null;
     this.contexts.set(event.context, {
       action,
       active: true,
       settings,
       audioTarget,
+      iconColor,
       ...(action === "progress" ? { mode: "remaining" } : {}),
     });
     if ((action === "progress" && !settingsMatch(event.param, settings))
@@ -562,9 +611,14 @@ export class SpotifyGSMTCPlugin {
     const entry = this.entry(event?.context);
     if (!entry) return;
     const raw = event.param || event.settings || {};
-    if (isAudioAction(entry.action)) {
-      entry.audioTarget = normalizeAudioTarget(raw.audioTarget) || DEFAULT_AUDIO_TARGET;
-      if (persist) this.sdk.setSettings?.({ audioTarget: entry.audioTarget }, event.context);
+    if (isColorAction(entry.action)) {
+      if (isAudioAction(entry.action)) {
+        entry.audioTarget = normalizeAudioTarget(raw.audioTarget) || DEFAULT_AUDIO_TARGET;
+      }
+      entry.iconColor = normalizeAudioIconColor(raw.iconColor);
+      if (persist) this.sdk.setSettings?.(isAudioAction(entry.action)
+        ? { audioTarget: entry.audioTarget, iconColor: entry.iconColor }
+        : { iconColor: entry.iconColor }, event.context);
       this.rendered.delete(event.context);
       this.render(event.context, entry.action, this.lastState, true);
       return;
@@ -886,15 +940,26 @@ export class SpotifyGSMTCPlugin {
       return;
     }
     if (ACTIONS[action]?.command?.startsWith("volume") || action === "mute-toggle") {
+      const iconColor = entry?.iconColor || DEFAULT_AUDIO_ICON_COLOR;
       if (!state.audioAvailable) {
-        this.sdk.setPathIcon(context, ACTIONS[action].icon, "No audio");
+        if (action === "mute-toggle") {
+          this.sdk.setBaseDataIcon(context, svgDataUri(
+            renderMuteToggleSvg("No audio", false, iconColor),
+          ), "");
+        } else {
+          this.sdk.setBaseDataIcon(context, svgDataUri(renderAudioIconSvg(action, iconColor)), "No audio");
+        }
         return;
       }
       const text = state.audioMixed ? "Mixed"
         : state.isMuted ? "Muted" : `${state.volumePercent}%`;
-      const icon = action === "mute-toggle" && state.isMuted
-        ? "./assets/unmute.svg" : ACTIONS[action].icon;
-      this.sdk.setPathIcon(context, icon, text);
+      if (action === "mute-toggle") {
+        this.sdk.setBaseDataIcon(context, svgDataUri(
+          renderMuteToggleSvg(text, state.isMuted, iconColor),
+        ), "");
+      } else {
+        this.sdk.setBaseDataIcon(context, svgDataUri(renderAudioIconSvg(action, iconColor)), text);
+      }
       return;
     }
     if (!state.available) {
@@ -912,13 +977,13 @@ export class SpotifyGSMTCPlugin {
       return;
     }
     if (action === "toggle") {
-      this.sdk.setPathIcon(
-        context,
-        state.isPlaying ? "./assets/pause.svg" : "./assets/play.svg",
-        state.isPlaying ? "Pause" : "Play",
-      );
+      this.sdk.setBaseDataIcon(context, svgDataUri(renderTransportIconSvg(
+        action, state.isPlaying, entry?.iconColor,
+      )), state.isPlaying ? "Pause" : "Play");
       return;
     }
-    this.sdk.setPathIcon(context, ACTIONS[action].icon, action === "previous" ? "Previous" : "Next");
+    this.sdk.setBaseDataIcon(context, svgDataUri(renderTransportIconSvg(
+      action, false, entry?.iconColor,
+    )), action === "previous" ? "Previous" : "Next");
   }
 }

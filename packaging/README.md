@@ -94,10 +94,10 @@ Now Playing can render color while playing, grayscale while paused, and the
 identical color data URI when playback resumes, while the four mosaic actions
 render their exact artwork quadrants from the same bundle. Mute Toggle renders a
 generated composite showing the selected audio source volume percent at the top plus the mute
-or unmute speaker icon; all three audio actions retain independent source selections and
-volume keys keep their host-rendered label; the dedicated
-Play/Pause key switches between play and pause icons with playback state, and
-Previous/Next render their transport labels. Generated
+or unmute speaker icon; all three audio actions retain independent source and icon-color
+settings and volume keys keep their host-rendered label. Previous, Play/Pause, and Next also
+retain independent icon colors; the dedicated Play/Pause key uses that color while switching
+between play and pause glyphs, and Previous/Next render their transport labels. Generated
 executables and transformed manifests do not belong in the repository, and this
 packaged runtime does not replace the companion installer.
 

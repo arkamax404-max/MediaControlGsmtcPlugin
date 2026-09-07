@@ -1,25 +1,22 @@
 <!doctype html>
-<html lang="en" data-action="mute-toggle">
+<html lang="en" data-action="previous">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Audio Source</title>
+  <title>Previous Icon</title>
   <style>
     :root { color-scheme: dark; font-family: Arial, sans-serif; }
     body { margin: 0; padding: 14px; background: #1e1f22; color: #f5f5f5; }
     form { display: grid; gap: 10px; }
     label { font-size: 13px; font-weight: 700; }
-    select, input { box-sizing: border-box; width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid #555; border-radius: 4px; background: #2b2d31; color: #fff; }
+    input { box-sizing: border-box; width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid #555; border-radius: 4px; background: #2b2d31; color: #fff; }
     .color-row { display: grid; grid-template-columns: 44px 1fr; gap: 8px; }
     input[type="color"] { padding: 2px; }
     .hint { margin: 0; color: #b5bac1; font-size: 12px; line-height: 1.4; }
   </style>
 </head>
 <body>
-  <form id="mute-settings" autocomplete="off">
-    <label for="audio-target">Audio source</label>
-    <select id="audio-target" name="audioTarget" aria-describedby="source-hint"></select>
-    <p id="source-hint" class="hint">Shows the system volume and audio sources currently active in Windows.</p>
+  <form id="transport-settings" autocomplete="off">
     <label for="icon-color">Icon color</label>
     <div class="color-row">
       <input id="icon-color" name="iconColor" type="color" value="#1DB954" aria-label="Icon color picker">

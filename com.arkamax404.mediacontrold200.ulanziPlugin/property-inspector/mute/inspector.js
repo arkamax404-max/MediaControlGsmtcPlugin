@@ -1,4 +1,7 @@
+import { DEFAULT_ICON_COLOR, normalizeIconColor } from "../shared/icon-color.js";
+
 export const DEFAULT_AUDIO_TARGET = "process:spotify.exe";
+export const DEFAULT_AUDIO_ICON_COLOR = DEFAULT_ICON_COLOR;
 const AUDIO_ACTIONS = new Set(["volume-up", "volume-down", "mute-toggle"]);
 
 export function normalizeAudioTarget(value) {
@@ -21,10 +24,17 @@ export function normalizeAudioSources(raw) {
   });
 }
 
+export function normalizeAudioIconColor(value) {
+  return normalizeIconColor(value);
+}
+
 function startInspector(sdk, documentRef) {
   const select = documentRef.querySelector("#audio-target");
-  if (!select) return;
+  const color = documentRef.querySelector("#icon-color");
+  const colorHex = documentRef.querySelector("#icon-color-hex");
+  if (!select || !color || !colorHex) return;
   let selected = DEFAULT_AUDIO_TARGET;
+  let iconColor = DEFAULT_AUDIO_ICON_COLOR;
   let sources = [];
   const action = AUDIO_ACTIONS.has(documentRef.documentElement.dataset.action)
     ? documentRef.documentElement.dataset.action : "mute-toggle";
@@ -48,6 +58,9 @@ function startInspector(sdk, documentRef) {
 
   const apply = (raw) => {
     selected = normalizeAudioTarget(raw?.audioTarget) || DEFAULT_AUDIO_TARGET;
+    iconColor = normalizeAudioIconColor(raw?.iconColor);
+    color.value = iconColor;
+    colorHex.value = iconColor;
     render();
   };
   const requestSources = () => sdk.sendToPlugin({ type: "requestAudioSources" });
@@ -61,9 +74,20 @@ function startInspector(sdk, documentRef) {
     sources = normalizeAudioSources(event?.payload?.audioSources);
     render();
   });
-  select.addEventListener("change", () => {
-    selected = normalizeAudioTarget(select.value) || DEFAULT_AUDIO_TARGET;
-    sdk.sendParamFromPlugin({ audioTarget: selected });
+  documentRef.querySelector("form")?.addEventListener("change", (event) => {
+    if (event.target === select) {
+      selected = normalizeAudioTarget(select.value) || DEFAULT_AUDIO_TARGET;
+    } else if (event.target === color) {
+      iconColor = normalizeAudioIconColor(color.value);
+      colorHex.value = iconColor;
+    } else if (event.target === colorHex) {
+      iconColor = normalizeAudioIconColor(colorHex.value);
+      color.value = iconColor;
+      colorHex.value = iconColor;
+    } else {
+      return;
+    }
+    sdk.sendParamFromPlugin({ audioTarget: selected, iconColor });
   });
   apply({});
   sdk.connect(`com.arkamax404.ulanzi.mediacontrol.${action}`);

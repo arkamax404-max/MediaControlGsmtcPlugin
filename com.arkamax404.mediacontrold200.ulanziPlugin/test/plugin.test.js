@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   ANIMATION_INTERVAL_MS,
   BRIDGE_ORIGIN,
+  DEFAULT_AUDIO_ICON_COLOR,
   DEFAULT_PROGRESS_SETTINGS,
   DEFAULT_LARGEITEM_SETTINGS,
   SpotifyGSMTCPlugin,
@@ -19,19 +20,26 @@ import {
   loadBridgeToken,
   nextProgressMode,
   normalizeArtworkBundle,
+  normalizeAudioIconColor,
   normalizeBridgeState,
   normalizeProgressSettings,
   normalizeLargeItemSettings,
   progressTextLayout,
   renderProgressSvg,
   renderLargeItemSvg,
+  renderAudioIconSvg,
+  renderMuteToggleSvg,
+  renderTransportIconSvg,
   svgDataUri,
 } from "../src/plugin.js";
 import {
+  DEFAULT_AUDIO_ICON_COLOR as INSPECTOR_DEFAULT_AUDIO_ICON_COLOR,
   DEFAULT_AUDIO_TARGET,
+  normalizeAudioIconColor as normalizeInspectorAudioIconColor,
   normalizeAudioSources,
   normalizeAudioTarget,
 } from "../property-inspector/mute/inspector.js";
+import { DEFAULT_ICON_COLOR, normalizeIconColor } from "../property-inspector/shared/icon-color.js";
 import {
   normalizeInspectorSettings,
   serializeInspectorSettings,
@@ -1087,6 +1095,32 @@ test("targets every audio command at its fixed loopback endpoint", async () => {
   ]);
 });
 
+test("renders and persists per-button transport icon colors", () => {
+  assert.equal(DEFAULT_ICON_COLOR, DEFAULT_AUDIO_ICON_COLOR);
+  assert.equal(normalizeIconColor("#abcdef"), "#ABCDEF");
+  assert.equal(normalizeIconColor("blue"), DEFAULT_ICON_COLOR);
+  const sdk = createSdk();
+  const plugin = createPlugin({ sdk });
+  const available = { online: true, available: true, revision: 1, isPlaying: false };
+  plugin.contexts.set("previous", { action: "previous", active: true, iconColor: "#ABCDEF" });
+  plugin.contexts.set("toggle", { action: "toggle", active: true, iconColor: "#123456" });
+  plugin.contexts.set("next", { action: "next", active: true, iconColor: DEFAULT_ICON_COLOR });
+  plugin.render("previous", "previous", available);
+  plugin.render("toggle", "toggle", available);
+  plugin.render("toggle", "toggle", { ...available, revision: 2, isPlaying: true });
+  plugin.render("next", "next", available);
+  assert.deepEqual(sdk.calls, [
+    ["base64", "previous", svgDataUri(renderTransportIconSvg("previous", false, "#ABCDEF")), "Previous"],
+    ["base64", "toggle", svgDataUri(renderTransportIconSvg("toggle", false, "#123456")), "Play"],
+    ["base64", "toggle", svgDataUri(renderTransportIconSvg("toggle", true, "#123456")), "Pause"],
+    ["base64", "next", svgDataUri(renderTransportIconSvg("next")), "Next"],
+  ]);
+  plugin.receiveSettings({ context: "previous", param: { iconColor: "#fedcba" } }, true);
+  assert.deepEqual(sdk.calls.find(([kind]) => kind === "settings"), [
+    "settings", { iconColor: "#FEDCBA" }, "previous",
+  ]);
+});
+
 test("renders and configures the large center action only for key 3_2", () => {
   const normalized = normalizeLargeItemSettings({
     showArtwork: false, pausedArtwork: "bad", backgroundColor: "#abcdef", fit: "cover",
@@ -1173,6 +1207,11 @@ test("setup inspector consumes every settings channel and polls without leaking 
 });
 
 test("normalizes mute sources and sends the selected target", async () => {
+  assert.equal(INSPECTOR_DEFAULT_AUDIO_ICON_COLOR, DEFAULT_AUDIO_ICON_COLOR);
+  assert.equal(normalizeInspectorAudioIconColor("#abcdef"), "#ABCDEF");
+  assert.equal(normalizeInspectorAudioIconColor("red"), DEFAULT_AUDIO_ICON_COLOR);
+  assert.equal(normalizeAudioIconColor("#abcdef"), "#ABCDEF");
+  assert.equal(normalizeAudioIconColor("#abcd"), DEFAULT_AUDIO_ICON_COLOR);
   assert.equal(normalizeAudioTarget("process:SPOTIFY.EXE"), DEFAULT_AUDIO_TARGET);
   assert.equal(normalizeAudioTarget("process:bad/path.exe"), null);
   assert.equal(normalizeAudioTarget(`process:${"\u{1F3B5}".repeat(70)}.exe`),
@@ -1194,7 +1233,12 @@ test("normalizes mute sources and sends the selected target", async () => {
     return response(state());
   }, now: () => Date.parse("2026-08-23T12:00:01.000Z") });
   plugin.add({ uuid: "com.arkamax404.ulanzi.mediacontrol.mute-toggle",
-    context: "mute", param: { audioTarget: "system" } });
+    context: "mute", param: { audioTarget: "system", iconColor: "#abcdef" } });
+  plugin.receiveSettings({ context: "mute",
+    param: { audioTarget: "system", iconColor: "#123456" } }, true);
+  assert.deepEqual(sdk.calls.find(([kind]) => kind === "settings"), [
+    "settings", { audioTarget: "system", iconColor: "#123456" }, "mute",
+  ]);
   await plugin.run({ context: "mute" });
 
   const command = requests.find(([url]) => url.endsWith("/command/mute-toggle"));
@@ -1218,12 +1262,19 @@ test("renders volume, mute, mixed, no-audio, and offline states", () => {
   plugin.render("none", "volume-up", { ...audio, revision: 4, audioAvailable: false });
   plugin.render("offline", "mute-toggle", { ...audio, revision: 5, online: false });
   assert.deepEqual(sdk.calls, [
-    ["path", "volume", "./assets/volume-up.svg", "65%"],
-    ["path", "muted", "./assets/unmute.svg", "Muted"],
-    ["path", "mixed", "./assets/volume-down.svg", "Mixed"],
-    ["path", "none", "./assets/volume-up.svg", "No audio"],
+    ["base64", "volume", svgDataUri(renderAudioIconSvg("volume-up")), "65%"],
+    ["base64", "muted", svgDataUri(renderMuteToggleSvg("Muted", true)), ""],
+    ["base64", "mixed", svgDataUri(renderAudioIconSvg("volume-down")), "Mixed"],
+    ["base64", "none", svgDataUri(renderAudioIconSvg("volume-up")), "No audio"],
     ["path", "offline", "./assets/offline.svg", "Offline"],
   ]);
+
+  plugin.contexts.set("custom", { action: "volume-up", active: true,
+    audioTarget: DEFAULT_AUDIO_TARGET, iconColor: "#ABCDEF" });
+  plugin.render("custom", "volume-up", { ...audio, revision: 6 });
+  const customSvg = Buffer.from(sdk.calls.at(-1)[2].split(",", 2)[1], "base64").toString("utf8");
+  assert.match(customSvg, /fill="#ABCDEF"/);
+  assert.match(customSvg, /stroke="#ABCDEF"/);
 });
 
 test("stale bridge state is rendered as unavailable", async () => {
@@ -1261,18 +1312,10 @@ test("prefixes every local icon path passed to the SDK", () => {
   plugin.render("unmute", "mute-toggle", { ...available, revision: 2,
     audioAvailable: true, volumePercent: 50, isMuted: true, audioMixed: false });
 
-  const paths = sdk.calls.map(([, , path]) => path);
+  const paths = sdk.calls.filter(([kind]) => kind === "path").map(([, , path]) => path);
   assert.deepEqual(paths, [
     "./assets/offline.svg",
     "./assets/music.svg",
-    "./assets/play.svg",
-    "./assets/pause.svg",
-    "./assets/previous.svg",
-    "./assets/next.svg",
-    "./assets/volume-up.svg",
-    "./assets/volume-down.svg",
-    "./assets/mute.svg",
-    "./assets/unmute.svg",
   ]);
   assert.ok(paths.every((path) => path.startsWith("./")));
 });
@@ -1298,7 +1341,19 @@ test("manifest declares approved identity, functional entrypoint, and unique act
   assert.equal(manifest.Category, "Media Control for D200");
   assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
-  assert.equal(manifest.Version, "1.4.5");
+  assert.equal(manifest.Version, "1.5.0");
+  const inspectors = Object.fromEntries(manifest.Actions.map((action) => [
+    action.UUID.split(".").at(-1), action.PropertyInspectorPath,
+  ]));
+  assert.deepEqual({
+    previous: inspectors.previous,
+    toggle: inspectors.toggle,
+    next: inspectors.next,
+  }, {
+    previous: "property-inspector/transport/previous.html",
+    toggle: "property-inspector/transport/toggle.html",
+    next: "property-inspector/transport/next.html",
+  });
   const uuids = [manifest.UUID, ...manifest.Actions.map(({ UUID }) => UUID)];
   assert.equal(new Set(uuids).size, uuids.length);
   assert.deepEqual(manifest.Actions.map(({ UUID }) => UUID), [

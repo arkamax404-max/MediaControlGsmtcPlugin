@@ -107,6 +107,10 @@ class PackagingContractTests(unittest.TestCase):
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith((".volume-up", ".volume-down"))
             }
+            transport_indexes = {
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith((".previous", ".toggle", ".next"))
+            }
             largeitem_index = next(
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith(".largeitem-nowplaying")
@@ -117,8 +121,8 @@ class PackagingContractTests(unittest.TestCase):
             )
             self.assertTrue(all("PropertyInspectorPath" not in action
                                 for index, action in enumerate(prepared["Actions"])
-                                if index not in {progress_index, mute_index, largeitem_index, setup_index,
-                                                 *volume_indexes}))
+                                 if index not in {progress_index, mute_index, largeitem_index, setup_index,
+                                                  *volume_indexes, *transport_indexes}))
             self.assertEqual(prepared["Actions"][progress_index]["PropertyInspectorPath"],
                              preparer.PROPERTY_INSPECTOR_FILES[0])
             self.assertEqual(prepared["Actions"][mute_index]["PropertyInspectorPath"],
@@ -134,6 +138,11 @@ class PackagingContractTests(unittest.TestCase):
             self.assertEqual(
                 prepared["Actions"][setup_index]["PropertyInspectorPath"],
                 preparer.PROPERTY_INSPECTOR_FILES[8],
+            )
+            self.assertEqual(
+                {prepared["Actions"][index]["PropertyInspectorPath"]
+                 for index in transport_indexes},
+                set(preparer.PROPERTY_INSPECTOR_FILES[10:13]),
             )
             referenced_assets = {
                 prepared["Icon"],

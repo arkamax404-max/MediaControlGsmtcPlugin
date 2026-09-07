@@ -29,7 +29,8 @@ def inspect_sdk():
     from now_playing_action import (ACTION_UUID as NOW_PLAYING_UUID, AUDIO_ACTIONS,
                                     MOSAIC_ACTIONS, MUTE_TOGGLE_UUID, PREVIOUS_UUID,
                                     TOGGLE_UUID, TRANSPORT_DISPLAY,
-                                    NowPlayingActionModel, mute_toggle_data_uri)
+                                    NowPlayingActionModel, audio_icon_data_uri,
+                                    mute_toggle_data_uri, transport_icon_data_uri)
     from progress_action import ACTION_UUID, ProgressActionModel
     from largeitem_action import ACTION_UUID as LARGEITEM_ACTION_UUID
     from setup_action import (ACTION_UUID as SETUP_ACTION_UUID, BUILTIN_UUID,
@@ -344,7 +345,7 @@ def inspect_sdk():
                and item.get("type") == 1]) < 2 and time.monotonic() < deadline:
         time.sleep(0.005)
     audio_payloads = []
-    for index, (action, icon) in enumerate(AUDIO_ACTIONS.items()):
+    for index, action in enumerate(AUDIO_ACTIONS):
         uuid, key, actionid = audio_contexts[index].split("___")
         items = [item for item in state_items() if item.get("uuid") == uuid]
         audio_payloads.append(items)
@@ -355,11 +356,12 @@ def inspect_sdk():
                     (1, None, mute_toggle_data_uri("55%", False), "", False, key, actionid),
                     (1, None, mute_toggle_data_uri("Muted", True), "", False, key, actionid)]):
                 raise RuntimeError(f"Unexpected integrated mute-toggle payloads: {items}")
-        elif ([(item.get("type"), item.get("path"), item.get("textData"),
-                item.get("showtext"), item.get("key"), item.get("actionid"))
-               for item in items] != [
-                (2, icon, "55%", True, key, actionid),
-                (2, icon, "Muted", True, key, actionid)]):
+        elif ([(item.get("type"), item.get("path"), item.get("data"),
+                 item.get("textData"), item.get("showtext"), item.get("key"),
+                 item.get("actionid"))
+                for item in items] != [
+                (1, None, audio_icon_data_uri(action), "55%", True, key, actionid),
+                (1, None, audio_icon_data_uri(action), "Muted", True, key, actionid)]):
             raise RuntimeError(f"Unexpected integrated audio payloads: {items}")
     toggle_display_uuid = transport_contexts[0].split("___")[0]
     deadline = time.monotonic() + 1
@@ -368,21 +370,26 @@ def inspect_sdk():
             and time.monotonic() < deadline:
         time.sleep(0.005)
     transport_payloads = []
-    for index, (action, icon) in enumerate(TRANSPORT_DISPLAY.items()):
+    for index, action in enumerate(TRANSPORT_DISPLAY):
         uuid, key, actionid = transport_contexts[index].split("___")
         items = [item for item in state_items() if item.get("uuid") == uuid]
         transport_payloads.append(items)
         if action == TOGGLE_UUID:
-            if ([(item.get("type"), item.get("path"), item.get("textData"),
-                   item.get("showtext"), item.get("key"), item.get("actionid"))
-                  for item in items] != [
-                    (2, "./assets/pause.svg", "Pause", True, key, actionid),
-                    (2, "./assets/play.svg", "Play", True, key, actionid)]):
+            if ([(item.get("type"), item.get("path"), item.get("data"),
+                    item.get("textData"), item.get("showtext"), item.get("key"),
+                    item.get("actionid"))
+                   for item in items] != [
+                    (1, None, transport_icon_data_uri(action, True),
+                     "Pause", True, key, actionid),
+                    (1, None, transport_icon_data_uri(action),
+                     "Play", True, key, actionid)]):
                 raise RuntimeError(f"Unexpected integrated toggle payloads: {items}")
-        elif ([(item.get("type"), item.get("path"), item.get("textData"),
-                item.get("showtext"), item.get("key"), item.get("actionid"))
+        elif ([(item.get("type"), item.get("path"), item.get("data"),
+                item.get("textData"), item.get("showtext"), item.get("key"),
+                item.get("actionid"))
                for item in items] != [
-                (2, icon, "Previous" if action == PREVIOUS_UUID else "Next",
+                (1, None, transport_icon_data_uri(action),
+                 "Previous" if action == PREVIOUS_UUID else "Next",
                  True, key, actionid)]):
             raise RuntimeError(f"Unexpected integrated transport payloads: {items}")
     if any(thread.name == "ulanzi-volume-repeat" for thread in threading.enumerate()):

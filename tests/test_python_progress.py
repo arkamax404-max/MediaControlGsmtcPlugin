@@ -26,7 +26,9 @@ from now_playing_action import (ACTION_UUID as NOW_PLAYING_UUID,
                                 TOGGLE_UUID,
                                 TRANSPORT_DISPLAY,
                                 MediaSnapshot, NowPlayingActionModel,
-                                mute_toggle_data_uri)  # noqa: E402
+                                audio_icon_data_uri,
+                                mute_toggle_data_uri,
+                                transport_icon_data_uri)  # noqa: E402
 from progress_action import (  # noqa: E402
     ACTION_UUID,
     ProgressActionModel,
@@ -685,8 +687,8 @@ class PythonProgressTests(unittest.TestCase):
         for action in AUDIO_ACTIONS:
             scheduler.handle_add({"uuid": action, "context": action})
         self.assertTrue(self._wait_for(lambda: all(
-            any(send == (action, icon, "55%") for send in api.sends)
-            for action, icon in AUDIO_ACTIONS.items()
+            any(send == (action, audio_icon_data_uri(action), "55%") for send in api.sends)
+            for action in AUDIO_ACTIONS
             if action != MUTE_TOGGLE_UUID), 1))
         self.assertTrue(self._wait_for(lambda: any(
             send == (MUTE_TOGGLE_UUID, mute_toggle_data_uri("55%", False), "")
@@ -698,12 +700,51 @@ class PythonProgressTests(unittest.TestCase):
             (MUTE_TOGGLE_UUID, mute_toggle_data_uri("55%", False), ""),
             (MUTE_TOGGLE_UUID, mute_toggle_data_uri("Muted", True), ""),
         ])
-        for action, icon in AUDIO_ACTIONS.items():
+        for action in AUDIO_ACTIONS:
             if action == MUTE_TOGGLE_UUID:
                 continue
             self.assertEqual([send for send in api.sends if send[0] == action], [
-                (action, icon, "55%"), (action, icon, "Muted"),
+                (action, audio_icon_data_uri(action), "55%"),
+                (action, audio_icon_data_uri(action), "Muted"),
             ])
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_colored_action_settings_persist_per_context(self):
+        class Api:
+            def __init__(self): self.settings = []
+            def setSettings(self, settings, context):
+                self.settings.append((context, settings)); return True
+
+        class Client:
+            def get_state(self, cancelled=None):
+                return BridgeStateResult("ok", {}, 200)
+
+        api, model = Api(), NowPlayingActionModel()
+        scheduler = ProgressScheduler(api, Client(), ProgressActionModel(), model,
+                                      ArtworkBundleCache(), clock=lambda: NOW)
+        self.assertTrue(scheduler.handle_add({
+            "uuid": MUTE_TOGGLE_UUID, "context": "audio",
+            "param": {"audioTarget": "process:spotify.exe"},
+        }))
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "audio",
+            "param": {"audioTarget": "system", "iconColor": "#abcdef"},
+        }))
+        self.assertEqual(api.settings, [("audio", {
+            "audioTarget": "system", "iconColor": "#ABCDEF",
+        })])
+        self.assertEqual((model.context("audio").audio_target,
+                          model.context("audio").icon_color),
+                         ("system", "#ABCDEF"))
+        self.assertTrue(scheduler.handle_add({
+            "uuid": PREVIOUS_UUID, "context": "previous",
+        }))
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "previous", "param": {"iconColor": "#123456"},
+        }))
+        self.assertEqual(api.settings[-1],
+                         ("previous", {"iconColor": "#123456"}))
+        self.assertEqual(model.context("previous").icon_color, "#123456")
         self.assertTrue(scheduler.stop(.5))
 
     def test_mute_command_polls_immediately_and_updates_display(self):
@@ -782,7 +823,9 @@ class PythonProgressTests(unittest.TestCase):
         self.assertTrue(scheduler.handle_clear({"param": [{"context": "gone"}]}))
         client.gate.set()
         self.assertTrue(self._wait_for(lambda: any(
-            send == ("kept", "./assets/volume-up.svg", "Muted") for send in api.sends), 1))
+            send == ("kept", audio_icon_data_uri(
+                "com.arkamax404.ulanzi.mediacontrol.volume-up"), "Muted")
+            for send in api.sends), 1))
         self.assertEqual([send for send in api.sends if send[0] != "kept"], [
             ("gone", mute_toggle_data_uri("55%", False), ""),
             ("sleeping", mute_toggle_data_uri("55%", False), ""),
@@ -814,19 +857,19 @@ class PythonProgressTests(unittest.TestCase):
         for action in TRANSPORT_DISPLAY:
             scheduler.handle_add({"uuid": action, "context": action})
         self.assertTrue(self._wait_for(lambda: all(
-            any(send == (action, TRANSPORT_DISPLAY[action],
+            any(send == (action, transport_icon_data_uri(action),
                          "Previous" if action == PREVIOUS_UUID else "Next")
                 for send in api.sends)
             for action in TRANSPORT_DISPLAY if action != TOGGLE_UUID), 1))
         self.assertTrue(self._wait_for(lambda: any(
-            send == (TOGGLE_UUID, "./assets/play.svg", "Play")
+            send == (TOGGLE_UUID, transport_icon_data_uri(TOGGLE_UUID), "Play")
             for send in api.sends), 1))
         self.assertTrue(self._wait_for(lambda: any(
-            send == (TOGGLE_UUID, "./assets/pause.svg", "Pause")
+            send == (TOGGLE_UUID, transport_icon_data_uri(TOGGLE_UUID, True), "Pause")
             for send in api.sends), 1))
         self.assertEqual([send for send in api.sends if send[0] == TOGGLE_UUID], [
-            (TOGGLE_UUID, "./assets/play.svg", "Play"),
-            (TOGGLE_UUID, "./assets/pause.svg", "Pause"),
+            (TOGGLE_UUID, transport_icon_data_uri(TOGGLE_UUID), "Play"),
+            (TOGGLE_UUID, transport_icon_data_uri(TOGGLE_UUID, True), "Pause"),
         ], "a play/pause transition re-renders the dedicated toggle button exactly once")
         for action in TRANSPORT_DISPLAY:
             if action == TOGGLE_UUID:
@@ -866,11 +909,11 @@ class PythonProgressTests(unittest.TestCase):
         router.start(); scheduler.start()
         scheduler.handle_add({"uuid": TOGGLE_UUID, "context": "toggle"})
         self.assertTrue(self._wait_for(lambda: api.sends == [
-            ("toggle", "./assets/play.svg", "Play")], 1))
+            ("toggle", transport_icon_data_uri(TOGGLE_UUID), "Play")], 1))
         self.assertTrue(router.handle_run({"uuid": TOGGLE_UUID, "context": "toggle"}))
         self.assertTrue(self._wait_for(lambda: api.sends == [
-            ("toggle", "./assets/play.svg", "Play"),
-            ("toggle", "./assets/pause.svg", "Pause"),
+            ("toggle", transport_icon_data_uri(TOGGLE_UUID), "Play"),
+            ("toggle", transport_icon_data_uri(TOGGLE_UUID, True), "Pause"),
         ], 1))
         self.assertEqual(client.commands, ["toggle"])
         self.assertGreaterEqual(client.state_calls, 2,
@@ -911,10 +954,11 @@ class PythonProgressTests(unittest.TestCase):
         self.assertTrue(scheduler.handle_clear({"param": [{"context": "gone"}]}))
         client.gate.set()
         self.assertTrue(self._wait_for(lambda: any(
-            send == ("kept", "./assets/pause.svg", "Pause") for send in api.sends), 1))
+            send == ("kept", transport_icon_data_uri(TOGGLE_UUID, True), "Pause")
+            for send in api.sends), 1))
         self.assertEqual([send for send in api.sends if send[0] != "kept"], [
-            ("gone", "./assets/play.svg", "Play"),
-            ("sleeping", "./assets/previous.svg", "Previous"),
+            ("gone", transport_icon_data_uri(TOGGLE_UUID), "Play"),
+            ("sleeping", transport_icon_data_uri(PREVIOUS_UUID), "Previous"),
         ], "cleared and inactive transport contexts must not re-render on later polls")
         self.assertTrue(scheduler.stop(.5))
 

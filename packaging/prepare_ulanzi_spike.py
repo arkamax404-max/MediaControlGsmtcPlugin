@@ -25,6 +25,11 @@ PROPERTY_INSPECTOR_FILES = (
     "property-inspector/largeitem/inspector.js",
     "property-inspector/setup/inspector.html",
     "property-inspector/setup/inspector.js",
+    "property-inspector/transport/previous.html",
+    "property-inspector/transport/toggle.html",
+    "property-inspector/transport/next.html",
+    "property-inspector/transport/inspector.js",
+    "property-inspector/shared/icon-color.js",
 )
 PROPERTY_INSPECTOR_VENDOR_FILES = (
     "vendor/ulanzi-sdk/html/js/constants.js",
@@ -136,6 +141,15 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
     if (volume_up.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[4]
             or volume_down.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[5]):
         raise ValueError("Volume property inspector paths are missing")
+    transport_paths = {
+        f"{manifest['UUID']}.previous": PROPERTY_INSPECTOR_FILES[10],
+        f"{manifest['UUID']}.toggle": PROPERTY_INSPECTOR_FILES[11],
+        f"{manifest['UUID']}.next": PROPERTY_INSPECTOR_FILES[12],
+    }
+    if any(next(action for action in manifest["Actions"]
+                if action.get("UUID") == action_uuid).get("PropertyInspectorPath") != path
+           for action_uuid, path in transport_paths.items()):
+        raise ValueError("Transport property inspector paths are missing")
     largeitem = next(action for action in manifest["Actions"]
                      if action.get("UUID") == f"{manifest['UUID']}.largeitem-nowplaying")
     if largeitem.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[6]:
@@ -158,7 +172,9 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
     resolved_scripts = []
     for inspector_name in (PROPERTY_INSPECTOR_FILES[0], PROPERTY_INSPECTOR_FILES[2],
                            PROPERTY_INSPECTOR_FILES[4], PROPERTY_INSPECTOR_FILES[5],
-                           PROPERTY_INSPECTOR_FILES[6], PROPERTY_INSPECTOR_FILES[8]):
+                           PROPERTY_INSPECTOR_FILES[6], PROPERTY_INSPECTOR_FILES[8],
+                           PROPERTY_INSPECTOR_FILES[10], PROPERTY_INSPECTOR_FILES[11],
+                           PROPERTY_INSPECTOR_FILES[12]):
         inspector = exact_source_path(plugin_source, inspector_name, "property-inspector")
         parser = _ScriptReferences()
         parser.feed(inspector.read_text("utf-8"))
@@ -182,6 +198,7 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
                         *PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[3],
                         *PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[7])
     expected_scripts += (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[9])
+    expected_scripts += (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[13]) * 3
     if tuple(resolved_scripts) != expected_scripts:
         raise ValueError("Property inspector script inventory is not approved")
     for reference in (*PROPERTY_INSPECTOR_FILES, *PROPERTY_INSPECTOR_VENDOR_FILES):
