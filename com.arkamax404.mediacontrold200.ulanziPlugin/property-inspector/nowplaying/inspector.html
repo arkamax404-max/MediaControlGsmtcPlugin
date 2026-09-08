@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Now Playing</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    body { margin: 0; padding: 14px; background: #1e1f22; color: #f5f5f5; }
+    form { display: grid; gap: 10px; }
+    label { display: grid; grid-template-columns: 132px 1fr; gap: 8px; align-items: center; font-size: 13px; font-weight: 700; }
+    input[type="checkbox"] { justify-self: start; }
+    .hint { margin: 0; color: #b5bac1; font-size: 12px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <form id="nowplaying-settings" autocomplete="off">
+    <label>Show progress bar <input type="checkbox" name="showProgress" checked></label>
+    <p class="hint">The playback indicator remains visible over the top-right corner of the artwork.</p>
+  </form>
+  <script src="../../vendor/ulanzi-sdk/html/js/constants.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/eventEmitter.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/timers.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/utils.js"></script>
+  <script src="../../vendor/ulanzi-sdk/html/js/ulanziApi.js"></script>
+  <script type="module" src="inspector.js"></script>
+</body>
+</html>

@@ -1,28 +1,11 @@
 import { DEFAULT_ICON_COLOR, normalizeIconColor } from "../shared/icon-color.js";
+import {
+  DEFAULT_AUDIO_TARGET, normalizeAudioSources, normalizeAudioTarget,
+} from "../shared/audio-source.js";
 
-export const DEFAULT_AUDIO_TARGET = "process:spotify.exe";
+export { DEFAULT_AUDIO_TARGET, normalizeAudioSources, normalizeAudioTarget };
 export const DEFAULT_AUDIO_ICON_COLOR = DEFAULT_ICON_COLOR;
 const AUDIO_ACTIONS = new Set(["volume-up", "volume-down", "mute-toggle"]);
-
-export function normalizeAudioTarget(value) {
-  if (value === "system") return value;
-  if (typeof value !== "string" || !value.startsWith("process:")) return null;
-  const process = value.slice(8).trim().toLocaleLowerCase("en-US");
-  if (!process || Array.from(process).length > 128 || /[\\/\x00-\x1f]/.test(process)) return null;
-  return `process:${process}`;
-}
-
-export function normalizeAudioSources(raw) {
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set();
-  return raw.slice(0, 64).flatMap((item) => {
-    const target = normalizeAudioTarget(item?.target);
-    const label = String(item?.label || "").trim().slice(0, 48);
-    if (!target || !label || seen.has(target)) return [];
-    seen.add(target);
-    return [{ target, label }];
-  });
-}
 
 export function normalizeAudioIconColor(value) {
   return normalizeIconColor(value);

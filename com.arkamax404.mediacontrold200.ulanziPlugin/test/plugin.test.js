@@ -7,6 +7,7 @@ import {
   ANIMATION_INTERVAL_MS,
   BRIDGE_ORIGIN,
   DEFAULT_AUDIO_ICON_COLOR,
+  DEFAULT_NOW_PLAYING_SETTINGS,
   DEFAULT_PROGRESS_SETTINGS,
   DEFAULT_LARGEITEM_SETTINGS,
   SpotifyGSMTCPlugin,
@@ -21,6 +22,8 @@ import {
   nextProgressMode,
   normalizeArtworkBundle,
   normalizeAudioIconColor,
+  normalizeNowPlayingSettings,
+  normalizeSecondaryAction,
   normalizeBridgeState,
   normalizeProgressSettings,
   normalizeLargeItemSettings,
@@ -29,6 +32,7 @@ import {
   renderLargeItemSvg,
   renderAudioIconSvg,
   renderMuteToggleSvg,
+  renderNowPlayingArtworkSvg,
   renderTransportIconSvg,
   svgDataUri,
 } from "../src/plugin.js";
@@ -40,6 +44,13 @@ import {
   normalizeAudioTarget,
 } from "../property-inspector/mute/inspector.js";
 import { DEFAULT_ICON_COLOR, normalizeIconColor } from "../property-inspector/shared/icon-color.js";
+import {
+  NOW_PLAYING_DEFAULTS,
+  normalizeNowPlayingSettings as normalizeNowPlayingInspectorSettings,
+} from "../property-inspector/nowplaying/inspector.js";
+import {
+  normalizeTileSettings,
+} from "../property-inspector/artwork-tile/inspector.js";
 import {
   normalizeInspectorSettings,
   serializeInspectorSettings,
@@ -220,7 +231,9 @@ test("authenticates health state artwork and commands in strict order", async ()
       if (url.includes("/artwork/")) return response(artworkBundle());
       return response({ ok: true });
     } });
-  plugin.contexts.set("cover", "nowplaying"); await plugin.poll();
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  }); await plugin.poll();
   assert.deepEqual(requests.map(([url]) => url), [`${BRIDGE_ORIGIN}/health`, `${BRIDGE_ORIGIN}/state`,
     `${BRIDGE_ORIGIN}/artwork/${ARTWORK_ID_A}`]);
   plugin.contexts.set("next", "next"); await plugin.run({ context: "next" });
@@ -241,7 +254,9 @@ test("reevaluates compatibility, clears stale artwork, and recovers", async () =
       if (url.endsWith("/state")) { stateCalls += 1; return response(state({ artwork_id: ARTWORK_ID_A })); }
       return response(artworkBundle());
     } });
-  plugin.contexts.set("cover", "nowplaying"); await plugin.poll();
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  }); await plugin.poll();
   plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   await plugin.poll();
   assert.equal(plugin.lastState.reason, "incompatible"); assert.equal(plugin.artworkBundle, null);
@@ -714,14 +729,19 @@ test("inspector normalization and serialization match plugin settings", () => {
   assert.deepEqual(normalizeProgressSettings({ strokeWidth: Number.NaN }), DEFAULT_PROGRESS_SETTINGS);
 });
 
-test("sends direct color and grayscale PNGs and restores the identical color URI", () => {
+test("composes artwork with playback badge and optional progress", () => {
   const sdk = createSdk();
-  const plugin = createPlugin({ sdk });
-  plugin.contexts.set("cover", "nowplaying");
+  const now = Date.parse("2026-08-23T12:00:15.000Z");
+  const plugin = createPlugin({ sdk, now: () => now });
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: true },
+  });
   plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   const thumbnail = PNG_ARTWORK;
   const current = {
     available: true, revision: 9, isPlaying: true, artworkId: ARTWORK_ID_A,
+    timelineAvailable: true, positionSeconds: 45, durationSeconds: 180,
+    playbackRate: 1, positionUpdatedAt: now,
     title: "Track", artist: "Artist",
   };
   plugin.render("cover", "nowplaying", current);
@@ -730,10 +750,25 @@ test("sends direct color and grayscale PNGs and restores the identical color URI
   plugin.render("cover", "nowplaying", current);
 
   assert.equal(plugin.artworkBundle.color, thumbnail, "the validated bundle remains untouched");
-  assert.deepEqual(sdk.calls[0], ["base64", "cover", thumbnail, "Track\nArtist"]);
-  assert.deepEqual(sdk.calls[1], ["base64", "cover", GRAYSCALE_ARTWORK, "Track\nArtist"]);
-  assert.deepEqual(sdk.calls[2], ["base64", "cover", thumbnail, "Track\nArtist"]);
-  assert.ok(sdk.calls.every(([, , uri]) => !uri.startsWith("data:image/svg+xml")));
+  assert.deepEqual(sdk.calls[0], ["base64", "cover", svgDataUri(
+    renderNowPlayingArtworkSvg(thumbnail, true, 0.25),
+  ), "Track\nArtist"]);
+  assert.deepEqual(sdk.calls[1], ["base64", "cover", svgDataUri(
+    renderNowPlayingArtworkSvg(GRAYSCALE_ARTWORK, false, 0.25),
+  ), "Track\nArtist"]);
+  assert.deepEqual(sdk.calls[2], sdk.calls[0]);
+  const svg = Buffer.from(sdk.calls[0][2].split(",", 2)[1], "base64").toString("utf8");
+  assert.match(svg, /<circle cx="168" cy="28" r="18" fill="#1DB954"\/>/);
+  assert.match(svg, /width="49\.000" height="7"/);
+
+  assert.deepEqual(normalizeNowPlayingSettings({}), DEFAULT_NOW_PLAYING_SETTINGS);
+  assert.deepEqual(normalizeNowPlayingInspectorSettings({}), NOW_PLAYING_DEFAULTS);
+  assert.equal(renderNowPlayingArtworkSvg(thumbnail, true, 0.25, false).includes('y="189"'), false);
+  plugin.receiveSettings({ context: "cover", param: { showProgress: false } }, true);
+  assert.deepEqual(sdk.calls.find(([kind]) => kind === "settings"), [
+    "settings", { showProgress: false }, "cover",
+  ]);
+  plugin.stop();
 });
 
 test("accepts only canonical bounded PNG bridge artwork byte-for-byte", () => {
@@ -890,7 +925,9 @@ test("uses one quiet offline fallback and recovers", async () => {
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
-  plugin.contexts.set("cover", "nowplaying");
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  });
   await plugin.poll();
   await plugin.poll();
   assert.deepEqual(sdk.calls, [["path", "cover", "./assets/offline.svg", "Offline"]]);
@@ -912,7 +949,9 @@ test("fetches one shared bundle per artwork ID and skips it on unchanged polls",
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
-  plugin.contexts.set("cover", "nowplaying");
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  });
   MOSAIC_ACTIONS.forEach((action, index) => plugin.contexts.set(`tile-${index}`, action));
   await plugin.poll();
   await plugin.poll();
@@ -922,7 +961,8 @@ test("fetches one shared bundle per artwork ID and skips it on unchanged polls",
     `${BRIDGE_ORIGIN}/state`,
   ]);
   assert.equal(plugin.artworkBundle.id, ARTWORK_ID_A);
-  assert.deepEqual(sdk.calls.slice(-5).map(([type]) => type), Array(5).fill("base64"));
+  const displays = sdk.calls.filter(([type]) => ["base64", "path"].includes(type));
+  assert.deepEqual(displays.slice(-5).map(([type]) => type), Array(5).fill("base64"));
 });
 
 test("bundle failure falls back atomically and retries on the next poll", async () => {
@@ -937,7 +977,9 @@ test("bundle failure falls back atomically and retries on the next poll", async 
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
-  plugin.contexts.set("cover", "nowplaying");
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  });
   MOSAIC_ACTIONS.forEach((action, index) => plugin.contexts.set(`tile-${index}`, action));
   await plugin.poll();
   assert.equal(plugin.artworkBundle, null);
@@ -961,7 +1003,9 @@ test("ID changes clear old artwork before fetch and stale responses cannot insta
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
-  plugin.contexts.set("cover", "nowplaying");
+  plugin.contexts.set("cover", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  });
   plugin.lastState = normalizeBridgeState(
     state({ artwork_id: ARTWORK_ID_A }), Date.parse("2026-08-23T12:00:01.000Z"),
   );
@@ -1000,7 +1044,9 @@ test("routes nowplaying and toggle through shared toggle flow and rerenders poll
     },
     now: () => Date.parse("2026-08-23T12:00:01.000Z"),
   });
-  plugin.contexts.set("cover-key", "nowplaying");
+  plugin.contexts.set("cover-key", {
+    action: "nowplaying", active: true, settings: { showProgress: false },
+  });
   plugin.contexts.set("toggle-key", "toggle");
   plugin.lastState = normalizeBridgeState(
     state({ artwork_id: ARTWORK_ID_A }), Date.parse("2026-08-23T12:00:01.000Z"),
@@ -1012,7 +1058,9 @@ test("routes nowplaying and toggle through shared toggle flow and rerenders poll
   const pausedUri = sdk.calls.findLast(([type, context]) => (
     type === "base64" && context === "cover-key"
   ))[2];
-  assert.equal(pausedUri, GRAYSCALE_ARTWORK);
+  assert.equal(pausedUri, svgDataUri(renderNowPlayingArtworkSvg(
+    GRAYSCALE_ARTWORK, false, 30 / 180, false,
+  )));
   await plugin.run({ context: "toggle-key" });
   assert.deepEqual(requests, [
     [`${BRIDGE_ORIGIN}/command/toggle`, "POST"],
@@ -1020,6 +1068,47 @@ test("routes nowplaying and toggle through shared toggle flow and rerenders poll
     [`${BRIDGE_ORIGIN}/command/toggle`, "POST"],
     [`${BRIDGE_ORIGIN}/state`, "GET"],
   ]);
+  plugin.stop();
+});
+
+test("artwork tiles execute configured plugin actions without changing their image", async () => {
+  assert.equal(normalizeSecondaryAction("toggle"), "toggle");
+  assert.equal(normalizeSecondaryAction("open-url"), "none");
+  assert.deepEqual(normalizeTileSettings({
+    secondaryAction: "mute-toggle", audioTarget: "system",
+  }), { secondaryAction: "mute-toggle", audioTarget: "system" });
+  const sdk = createSdk();
+  const requests = [];
+  const plugin = createPlugin({
+    sdk,
+    fetchImpl: async (url, options) => {
+      requests.push([url, options]);
+      return response(state({ artwork_id: ARTWORK_ID_A }));
+    },
+    now: () => Date.parse("2026-08-23T12:00:01.000Z"),
+  });
+  plugin.contexts.set("tile", {
+    action: "artwork-top-left", active: true,
+    secondaryAction: "mute-toggle", audioTarget: "system",
+  });
+  plugin.lastState = normalizeBridgeState(
+    state({ artwork_id: ARTWORK_ID_A }), Date.parse("2026-08-23T12:00:01.000Z"),
+  );
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  plugin.render("tile", "artwork-top-left", plugin.lastState);
+  const before = structuredClone(sdk.calls.filter(([kind]) => ["path", "base64"].includes(kind)));
+  assert.equal(await plugin.run({ context: "tile" }), true);
+  const command = requests.find(([url]) => url.endsWith("/command/mute-toggle"));
+  assert.equal(command[1].body, '{"audio_target":"system"}');
+  assert.deepEqual(sdk.calls.filter(([kind]) => ["path", "base64"].includes(kind)), before,
+    "secondary actions do not replace tile artwork");
+  plugin.receiveSettings({
+    context: "tile", param: { secondaryAction: "next", audioTarget: "bad" },
+  }, true);
+  assert.deepEqual(sdk.calls.at(-1), [
+    "settings", { secondaryAction: "next", audioTarget: DEFAULT_AUDIO_TARGET }, "tile",
+  ]);
+  plugin.stop();
 });
 
 test("failed toggle commands preserve last state and rendered output", async () => {
@@ -1341,15 +1430,17 @@ test("manifest declares approved identity, functional entrypoint, and unique act
   assert.equal(manifest.Category, "Media Control for D200");
   assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
-  assert.equal(manifest.Version, "1.5.0");
+  assert.equal(manifest.Version, "1.6.0");
   const inspectors = Object.fromEntries(manifest.Actions.map((action) => [
     action.UUID.split(".").at(-1), action.PropertyInspectorPath,
   ]));
   assert.deepEqual({
+    nowplaying: inspectors.nowplaying,
     previous: inspectors.previous,
     toggle: inspectors.toggle,
     next: inspectors.next,
   }, {
+    nowplaying: "property-inspector/nowplaying/inspector.html",
     previous: "property-inspector/transport/previous.html",
     toggle: "property-inspector/transport/toggle.html",
     next: "property-inspector/transport/next.html",

@@ -117,7 +117,7 @@ the same close and validation flow, followed by an attempted automatic relaunch.
 
 | Action | Press behavior | Key display |
 |---|---|---|
-| Now Playing | Toggle play/pause | Full artwork: color while playing, grayscale while paused, with title and artist |
+| Now Playing | Toggle play/pause | Full artwork with playback badge, optional bottom progress bar, title, and artist |
 | Large Now Playing | None (display only) | Center display with artwork, title, artist, playback state, progress, and time |
 | Previous | Previous track | Transport icon with `Previous` label |
 | Play/Pause | Toggle play/pause | `Pause` icon while playing, `Play` icon while paused |
@@ -211,7 +211,10 @@ The key displays the GSMTC thumbnail with the track title and artist. While play
 uses the bridge's color PNG; while paused it uses the matching grayscale PNG of the same
 artwork, and on resume it restores the identical color image. If no artwork is available
 it falls back to a bundled music icon. Pressing the key toggles play/pause exactly once
-per press.
+per press. A circular playback badge overlays the top-right corner using the same visual
+language as Large Now Playing. A thin progress bar follows the bottom edge whenever GSMTC
+provides a valid timeline; disable **Show progress bar** in this key's Property Inspector
+to keep only the artwork and playback badge.
 
 ### Transport keys
 
@@ -265,6 +268,12 @@ no playback or local mode state. The polled state contains only an artwork conte
 the plugin fetches one immutable color, grayscale, and four-tile bundle when that ID
 changes, then shares the validated bundle across every artwork key instead of
 retransmitting images on each state poll.
+
+Each artwork tile has an **On press** setting. It defaults to **None**, preserving the
+display-only behavior, or can execute Previous, Play/Pause, Next, Volume Up, Volume Down,
+or Mute Toggle through the same bounded command queue as the dedicated controls. Audio
+actions expose an independent Audio source selector on each tile. The selected secondary
+action never replaces or redraws the artwork quadrant.
 
 ### Track Progress
 

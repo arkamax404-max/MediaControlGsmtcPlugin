@@ -85,13 +85,17 @@ fsynced backup, and uses authenticated journals for rollback or crash recovery. 
 live bytes are never overwritten automatically and are reported as requiring manual
 recovery. Packaging this helper therefore enables managed profile mutation and must not be
 described or reviewed as a diagnostic-only artifact.
+Artwork tile contexts may optionally route one secondary media command through the same
+bounded transport queue. The default is no command; audio commands retain a per-tile
+audio target, and this setting does not participate in tile rendering or cache identity.
 The helper polls Studio process state without opening console windows, publishes
 `Waiting for Studio to close`, and allows ten minutes for the user to close Studio. Large
 Now Playing persists `SmallViewMode: 2` so page activation returns to the background-only
 presentation instead of the built-in clock layer.
 The runtime retains the validated color and grayscale artwork bundle foundation so
 Now Playing can render color while playing, grayscale while paused, and the
-identical color data URI when playback resumes, while the four mosaic actions
+identical color artwork when playback resumes. It composes that artwork with the Large
+Now Playing playback badge and an optional extrapolated bottom progress bar, while the four mosaic actions
 render their exact artwork quadrants from the same bundle. Mute Toggle renders a
 generated composite showing the selected audio source volume percent at the top plus the mute
 or unmute speaker icon; all three audio actions retain independent source and icon-color

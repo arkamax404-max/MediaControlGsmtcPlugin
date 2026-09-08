@@ -17,6 +17,7 @@ export const DEFAULT_PROGRESS_SETTINGS = Object.freeze({
 });
 export const DEFAULT_AUDIO_TARGET = "process:spotify.exe";
 export const DEFAULT_AUDIO_ICON_COLOR = "#1DB954";
+export const DEFAULT_NOW_PLAYING_SETTINGS = Object.freeze({ showProgress: true });
 
 const ACTIONS = Object.freeze({
   nowplaying: { command: "toggle", icon: "./assets/music.svg" },
@@ -42,6 +43,9 @@ const ACTIONS = Object.freeze({
 const isAudioAction = (action) => action === "mute-toggle" || action?.startsWith("volume-");
 const isTransportAction = (action) => ["previous", "toggle", "next"].includes(action);
 const isColorAction = (action) => isAudioAction(action) || isTransportAction(action);
+const SECONDARY_ACTIONS = new Set([
+  "none", "previous", "toggle", "next", "volume-up", "volume-down", "mute-toggle",
+]);
 
 const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const ARTWORK_PATTERN = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/;
@@ -121,9 +125,17 @@ export function normalizeAudioTarget(value) {
   return `process:${process}`;
 }
 
+export function normalizeSecondaryAction(value) {
+  return SECONDARY_ACTIONS.has(value) ? value : "none";
+}
+
 export function normalizeAudioIconColor(value) {
   return COLOR_PATTERN.test(String(value || ""))
     ? String(value).toUpperCase() : DEFAULT_AUDIO_ICON_COLOR;
+}
+
+export function normalizeNowPlayingSettings(raw = {}) {
+  return { showProgress: typeof raw?.showProgress === "boolean" ? raw.showProgress : true };
 }
 
 export function renderAudioIconSvg(action, color = DEFAULT_AUDIO_ICON_COLOR) {
@@ -162,6 +174,23 @@ export function renderTransportIconSvg(action, playing = false,
   return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 100 100">`
     + `<rect width="100" height="100" rx="18" fill="#121212"/>`
     + `<path fill="${safeColor}" d="${path}"/></svg>`;
+}
+
+export function renderNowPlayingArtworkSvg(artwork, playing, progress = null,
+  showProgress = true) {
+  const safeArtwork = artworkDataUri(artwork);
+  if (!safeArtwork) return "";
+  const glyph = playing
+    ? `<path d="M162 19l14 9-14 9z" fill="#FFFFFF"/>`
+    : `<path d="M161 19h5v18h-5zm10 0h5v18h-5z" fill="#FFFFFF"/>`;
+  const ratio = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : null;
+  const progressBar = showProgress && ratio !== null
+    ? `<rect x="0" y="189" width="196" height="7" fill="#121212" opacity="0.72"/>`
+      + `<rect x="0" y="189" width="${(196 * ratio).toFixed(3)}" height="7" fill="#1DB954"/>`
+    : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">`
+    + `<image width="196" height="196" href="${safeArtwork}"/>`
+    + `<circle cx="168" cy="28" r="18" fill="#1DB954"/>${glyph}${progressBar}</svg>`;
 }
 
 function normalizeAudioSources(raw) {
@@ -564,8 +593,10 @@ export class SpotifyGSMTCPlugin {
     if (!action || !event?.context) return;
     if (action === "largeitem-nowplaying" && !largeItemContext(event)) return;
     const settings = action === "progress" ? normalizeProgressSettings(event.param)
-      : action === "largeitem-nowplaying" ? normalizeLargeItemSettings(event.param) : null;
-    const audioTarget = isAudioAction(action)
+      : action === "largeitem-nowplaying" ? normalizeLargeItemSettings(event.param)
+        : action === "nowplaying" ? normalizeNowPlayingSettings(event.param) : null;
+    const mosaicAction = Number.isInteger(ACTIONS[action]?.tile);
+    const audioTarget = isAudioAction(action) || mosaicAction
       ? normalizeAudioTarget(event.param?.audioTarget) || DEFAULT_AUDIO_TARGET : null;
     const iconColor = isColorAction(action)
       ? normalizeAudioIconColor(event.param?.iconColor) : null;
@@ -575,6 +606,8 @@ export class SpotifyGSMTCPlugin {
       settings,
       audioTarget,
       iconColor,
+      secondaryAction: mosaicAction
+        ? normalizeSecondaryAction(event.param?.secondaryAction) : "none",
       ...(action === "progress" ? { mode: "remaining" } : {}),
     });
     if ((action === "progress" && !settingsMatch(event.param, settings))
@@ -611,6 +644,22 @@ export class SpotifyGSMTCPlugin {
     const entry = this.entry(event?.context);
     if (!entry) return;
     const raw = event.param || event.settings || {};
+    if (Number.isInteger(ACTIONS[entry.action]?.tile)) {
+      entry.secondaryAction = normalizeSecondaryAction(raw.secondaryAction);
+      entry.audioTarget = normalizeAudioTarget(raw.audioTarget) || DEFAULT_AUDIO_TARGET;
+      if (persist) this.sdk.setSettings?.({
+        secondaryAction: entry.secondaryAction, audioTarget: entry.audioTarget,
+      }, event.context);
+      return;
+    }
+    if (entry.action === "nowplaying") {
+      entry.settings = normalizeNowPlayingSettings(raw);
+      if (persist) this.sdk.setSettings?.(entry.settings, event.context);
+      this.rendered.delete(event.context);
+      this.render(event.context, entry.action, this.lastState, true);
+      this.manageAnimation();
+      return;
+    }
     if (isColorAction(entry.action)) {
       if (isAudioAction(entry.action)) {
         entry.audioTarget = normalizeAudioTarget(raw.audioTarget) || DEFAULT_AUDIO_TARGET;
@@ -649,7 +698,9 @@ export class SpotifyGSMTCPlugin {
       this.render(event.context, action, this.lastState, true);
       return false;
     }
-    const command = ACTIONS[action]?.command;
+    const command = ACTIONS[action]?.command
+      || (Number.isInteger(ACTIONS[action]?.tile) && entry?.secondaryAction !== "none"
+        ? entry?.secondaryAction : null);
     if (!command) return false;
     try {
       const snapshot = await this.checkCompatibility();
@@ -660,7 +711,7 @@ export class SpotifyGSMTCPlugin {
       const response = await this.fetchImpl(`${BRIDGE_ORIGIN}/command/${command}`, {
         method: "POST",
         headers: this.requestHeaders(snapshot, { "Content-Type": "application/json" }),
-        body: JSON.stringify(isAudioAction(action)
+        body: JSON.stringify(isAudioAction(command)
           ? { audio_target: entry?.audioTarget || DEFAULT_AUDIO_TARGET } : {}),
         signal: AbortSignal.timeout(1000),
       });
@@ -756,7 +807,8 @@ export class SpotifyGSMTCPlugin {
       } }, event.context);
       return;
     }
-    if (!isAudioAction(entry?.action) || event?.payload?.type !== "requestAudioSources") return;
+    if (!(isAudioAction(entry?.action) || Number.isInteger(ACTIONS[entry?.action]?.tile))
+      || event?.payload?.type !== "requestAudioSources") return;
     this.publishAudioSources(event.context);
     void this.poll();
   }
@@ -767,7 +819,8 @@ export class SpotifyGSMTCPlugin {
     )) };
     for (const [context] of this.contexts) {
       if ((onlyContext === null || context === onlyContext)
-        && isAudioAction(this.entry(context)?.action)) {
+        && (isAudioAction(this.entry(context)?.action)
+          || Number.isInteger(ACTIONS[this.entry(context)?.action]?.tile))) {
         this.sdk.sendToPropertyInspector?.(payload, context);
       }
     }
@@ -833,7 +886,9 @@ export class SpotifyGSMTCPlugin {
     if (extrapolatePosition(this.lastState, this.now()) >= this.lastState.durationSeconds) return false;
     for (const [context] of this.contexts) {
       const entry = this.entry(context);
-      if (["progress", "largeitem-nowplaying"].includes(entry?.action) && entry.active) return true;
+      if ((["progress", "largeitem-nowplaying"].includes(entry?.action)
+        || (entry?.action === "nowplaying" && entry.settings?.showProgress !== false))
+        && entry.active) return true;
     }
     return false;
   }
@@ -854,7 +909,9 @@ export class SpotifyGSMTCPlugin {
   animationTick() {
     for (const [context] of this.contexts) {
       const entry = this.entry(context);
-      if (["progress", "largeitem-nowplaying"].includes(entry?.action) && entry.active) {
+      if ((["progress", "largeitem-nowplaying"].includes(entry?.action)
+        || (entry?.action === "nowplaying" && entry.settings?.showProgress !== false))
+        && entry.active) {
         this.render(context, entry.action, this.lastState);
       }
     }
@@ -930,7 +987,11 @@ export class SpotifyGSMTCPlugin {
     }
     const signature = [state.online, state.available, state.audioAvailable, state.revision,
       state.isPlaying, state.volumePercent, state.isMuted, state.audioMixed,
-      state.artworkId, this.artworkBundle?.id].join(":");
+      state.artworkId, this.artworkBundle?.id,
+      action === "nowplaying" && entry?.settings?.showProgress !== false
+        && state.timelineAvailable && state.durationSeconds > 0
+        ? (extrapolatePosition(state, this.now()) / state.durationSeconds).toFixed(3) : "",
+    ].join(":");
     if (this.rendered.get(context) === signature) return;
     this.rendered.set(context, signature);
 
@@ -972,7 +1033,11 @@ export class SpotifyGSMTCPlugin {
       const colorArtwork = bundle?.color || null;
       const pausedArtwork = bundle?.grayscale || colorArtwork;
       const artwork = state.isPlaying ? colorArtwork : pausedArtwork;
-      if (artwork) this.sdk.setBaseDataIcon(context, artwork, text);
+      const progress = state.timelineAvailable && state.durationSeconds > 0
+        ? extrapolatePosition(state, this.now()) / state.durationSeconds : null;
+      if (artwork) this.sdk.setBaseDataIcon(context, svgDataUri(renderNowPlayingArtworkSvg(
+        artwork, state.isPlaying, progress, entry?.settings?.showProgress !== false,
+      )), text);
       else this.sdk.setPathIcon(context, "./assets/music.svg", text);
       return;
     }

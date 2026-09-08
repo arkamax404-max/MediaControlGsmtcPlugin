@@ -30,6 +30,14 @@ PROPERTY_INSPECTOR_FILES = (
     "property-inspector/transport/next.html",
     "property-inspector/transport/inspector.js",
     "property-inspector/shared/icon-color.js",
+    "property-inspector/nowplaying/inspector.html",
+    "property-inspector/nowplaying/inspector.js",
+    "property-inspector/shared/audio-source.js",
+    "property-inspector/artwork-tile/top-left.html",
+    "property-inspector/artwork-tile/top-right.html",
+    "property-inspector/artwork-tile/bottom-left.html",
+    "property-inspector/artwork-tile/bottom-right.html",
+    "property-inspector/artwork-tile/inspector.js",
 )
 PROPERTY_INSPECTOR_VENDOR_FILES = (
     "vendor/ulanzi-sdk/html/js/constants.js",
@@ -126,6 +134,20 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
     )
     if len(manifest["Actions"]) != len(PORTED_ACTION_SUFFIXES):
         raise ValueError("External projection must contain exactly the approved actions")
+    tile_paths = {
+        f"{manifest['UUID']}.artwork-top-left": PROPERTY_INSPECTOR_FILES[18],
+        f"{manifest['UUID']}.artwork-top-right": PROPERTY_INSPECTOR_FILES[19],
+        f"{manifest['UUID']}.artwork-bottom-left": PROPERTY_INSPECTOR_FILES[20],
+        f"{manifest['UUID']}.artwork-bottom-right": PROPERTY_INSPECTOR_FILES[21],
+    }
+    if any(next(action for action in manifest["Actions"]
+                if action.get("UUID") == action_uuid).get("PropertyInspectorPath") != path
+           for action_uuid, path in tile_paths.items()):
+        raise ValueError("Artwork tile property inspector paths are missing")
+    now_playing = next(action for action in manifest["Actions"]
+                       if action.get("UUID") == f"{manifest['UUID']}.nowplaying")
+    if now_playing.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[15]:
+        raise ValueError("Now Playing property inspector path is missing")
     progress = next(action for action in manifest["Actions"]
                     if action.get("UUID") == f"{manifest['UUID']}.progress")
     if progress.get("PropertyInspectorPath") != PROPERTY_INSPECTOR_FILES[0]:
@@ -174,7 +196,9 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
                            PROPERTY_INSPECTOR_FILES[4], PROPERTY_INSPECTOR_FILES[5],
                            PROPERTY_INSPECTOR_FILES[6], PROPERTY_INSPECTOR_FILES[8],
                            PROPERTY_INSPECTOR_FILES[10], PROPERTY_INSPECTOR_FILES[11],
-                           PROPERTY_INSPECTOR_FILES[12]):
+                           PROPERTY_INSPECTOR_FILES[12], PROPERTY_INSPECTOR_FILES[15],
+                           PROPERTY_INSPECTOR_FILES[18], PROPERTY_INSPECTOR_FILES[19],
+                           PROPERTY_INSPECTOR_FILES[20], PROPERTY_INSPECTOR_FILES[21]):
         inspector = exact_source_path(plugin_source, inspector_name, "property-inspector")
         parser = _ScriptReferences()
         parser.feed(inspector.read_text("utf-8"))
@@ -199,6 +223,8 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
                         *PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[7])
     expected_scripts += (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[9])
     expected_scripts += (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[13]) * 3
+    expected_scripts += (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[16])
+    expected_scripts += (*PROPERTY_INSPECTOR_VENDOR_FILES, PROPERTY_INSPECTOR_FILES[22]) * 4
     if tuple(resolved_scripts) != expected_scripts:
         raise ValueError("Property inspector script inventory is not approved")
     for reference in (*PROPERTY_INSPECTOR_FILES, *PROPERTY_INSPECTOR_VENDOR_FILES):

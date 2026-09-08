@@ -99,6 +99,10 @@ class PackagingContractTests(unittest.TestCase):
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith(".progress")
             )
+            now_playing_index = next(
+                index for index, action in enumerate(prepared["Actions"])
+                if action["UUID"].endswith(".nowplaying")
+            )
             mute_index = next(
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith(".mute-toggle")
@@ -111,6 +115,10 @@ class PackagingContractTests(unittest.TestCase):
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith((".previous", ".toggle", ".next"))
             }
+            tile_indexes = {
+                index for index, action in enumerate(prepared["Actions"])
+                if ".artwork-" in action["UUID"]
+            }
             largeitem_index = next(
                 index for index, action in enumerate(prepared["Actions"])
                 if action["UUID"].endswith(".largeitem-nowplaying")
@@ -121,8 +129,14 @@ class PackagingContractTests(unittest.TestCase):
             )
             self.assertTrue(all("PropertyInspectorPath" not in action
                                 for index, action in enumerate(prepared["Actions"])
-                                 if index not in {progress_index, mute_index, largeitem_index, setup_index,
-                                                  *volume_indexes, *transport_indexes}))
+                                 if index not in {now_playing_index, progress_index, mute_index,
+                                                  largeitem_index, setup_index,
+                                                  *volume_indexes, *transport_indexes,
+                                                  *tile_indexes}))
+            self.assertEqual(
+                prepared["Actions"][now_playing_index]["PropertyInspectorPath"],
+                preparer.PROPERTY_INSPECTOR_FILES[15],
+            )
             self.assertEqual(prepared["Actions"][progress_index]["PropertyInspectorPath"],
                              preparer.PROPERTY_INSPECTOR_FILES[0])
             self.assertEqual(prepared["Actions"][mute_index]["PropertyInspectorPath"],
@@ -143,6 +157,11 @@ class PackagingContractTests(unittest.TestCase):
                 {prepared["Actions"][index]["PropertyInspectorPath"]
                  for index in transport_indexes},
                 set(preparer.PROPERTY_INSPECTOR_FILES[10:13]),
+            )
+            self.assertEqual(
+                {prepared["Actions"][index]["PropertyInspectorPath"]
+                 for index in tile_indexes},
+                set(preparer.PROPERTY_INSPECTOR_FILES[18:22]),
             )
             referenced_assets = {
                 prepared["Icon"],
@@ -207,7 +226,10 @@ class PackagingContractTests(unittest.TestCase):
                                              (preparer.PROPERTY_INSPECTOR_FILES[6],
                                               preparer.PROPERTY_INSPECTOR_FILES[7]),
                                              (preparer.PROPERTY_INSPECTOR_FILES[8],
-                                              preparer.PROPERTY_INSPECTOR_FILES[9])):
+                                               preparer.PROPERTY_INSPECTOR_FILES[9]),
+                                             *((preparer.PROPERTY_INSPECTOR_FILES[index],
+                                                preparer.PROPERTY_INSPECTOR_FILES[22])
+                                               for index in range(18, 22))):
                 html = (target / html_name).read_text("utf-8")
                 sources = re.findall(r'<script(?:\s+type="module")?\s+src="([^"]+)"', html)
                 parent = Path(html_name).parent

@@ -25,10 +25,11 @@ from now_playing_action import (ACTION_UUID as NOW_PLAYING_UUID,
                                 PREVIOUS_UUID,
                                 TOGGLE_UUID,
                                 TRANSPORT_DISPLAY,
-                                MediaSnapshot, NowPlayingActionModel,
-                                audio_icon_data_uri,
-                                mute_toggle_data_uri,
-                                transport_icon_data_uri)  # noqa: E402
+                                 MediaSnapshot, NowPlayingActionModel,
+                                 audio_icon_data_uri,
+                                 mute_toggle_data_uri,
+                                 now_playing_artwork_data_uri,
+                                 transport_icon_data_uri)  # noqa: E402
 from progress_action import (  # noqa: E402
     ACTION_UUID,
     ProgressActionModel,
@@ -52,6 +53,8 @@ from transport_actions import TransportRouter  # noqa: E402
 TOKEN = "A" * 43
 INSTANCE_ID = "123e4567-e89b-42d3-a456-426614174000"
 NOW = datetime(2026, 8, 23, 12, 0, 15, tzinfo=timezone.utc)
+COLOR_URI = "data:image/png;base64,Y29sb3I="
+GRAYSCALE_URI = "data:image/png;base64,Z3JheQ=="
 
 
 def health(**overrides):
@@ -584,7 +587,7 @@ class PythonProgressTests(unittest.TestCase):
 
     def test_one_poll_drives_progress_and_nowplaying_fallback_then_exact_artwork(self):
         artwork_id = "a" * 64
-        bundle = ArtworkBundle(artwork_id, "color-image", "gray-image",
+        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI,
                                ("tl", "tr", "bl", "br"))
         payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
                         title="Track", artist="Artist", artwork_id=artwork_id)
@@ -613,22 +616,25 @@ class PythonProgressTests(unittest.TestCase):
         callback_thread = threading.get_ident()
         self.assertTrue(scheduler.handle_add({"uuid": ACTION_UUID, "context": "progress",
                                               "param": progress_settings_payload(ProgressSettings())}))
-        self.assertTrue(scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"}))
+        self.assertTrue(scheduler.handle_add({
+            "uuid": NOW_PLAYING_UUID, "context": "cover", "param": {"showProgress": False},
+        }))
         scheduler.start()
-        self.assertTrue(self._wait_for(lambda: any(send[3] == "color-image"
+        expected_artwork = now_playing_artwork_data_uri(COLOR_URI, True, show_progress=False)
+        self.assertTrue(self._wait_for(lambda: any(send[3] == expected_artwork
                                                    for send in api.sends)))
         self.assertEqual((client.state_calls, client.artwork_calls), (1, 1))
         cover = [send for send in api.sends if send[2] == "cover"]
         self.assertEqual([(send[1], send[3], send[4]) for send in cover], [
             ("path", "./assets/music.svg", "Track\nArtist"),
-            ("data", "color-image", "Track\nArtist"),
+            ("data", expected_artwork, "Track\nArtist"),
         ])
         self.assertTrue(all(send[0] == cover[0][0] != callback_thread for send in api.sends))
         self.assertTrue(scheduler.stop(.5))
 
     def test_one_poll_and_fetch_drive_nowplaying_and_all_mosaic_tiles(self):
         artwork_id = "6" * 64
-        bundle = ArtworkBundle(artwork_id, "color", "gray", ("tl", "tr", "bl", "br"))
+        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI, ("tl", "tr", "bl", "br"))
         payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
                         artwork_id=artwork_id)
 
@@ -650,11 +656,14 @@ class PythonProgressTests(unittest.TestCase):
                                       NowPlayingActionModel(), ArtworkBundleCache(),
                                       clock=lambda: NOW, poll_interval=.2)
         callback_thread = threading.get_ident(); scheduler.start()
-        scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"})
+        scheduler.handle_add({
+            "uuid": NOW_PLAYING_UUID, "context": "cover", "param": {"showProgress": False},
+        })
         for index, action in enumerate(MOSAIC_ACTIONS):
             scheduler.handle_add({"uuid": action, "context": f"tile-{index}"})
+        expected_artwork = now_playing_artwork_data_uri(COLOR_URI, True, show_progress=False)
         self.assertTrue(self._wait_for(lambda: all(any(send[2] == image for send in api.sends)
-                                                   for image in ("color", *bundle.tiles))))
+                                                   for image in (expected_artwork, *bundle.tiles))))
         self.assertEqual((client.state_calls, client.artwork_calls), (1, 1))
         self.assertTrue(all(send[0] != callback_thread for send in api.sends))
         self.assertFalse(scheduler.handle_run({"uuid": next(iter(MOSAIC_ACTIONS)),
@@ -745,6 +754,62 @@ class PythonProgressTests(unittest.TestCase):
         self.assertEqual(api.settings[-1],
                          ("previous", {"iconColor": "#123456"}))
         self.assertEqual(model.context("previous").icon_color, "#123456")
+        self.assertTrue(scheduler.handle_add({
+            "uuid": NOW_PLAYING_UUID, "context": "cover",
+        }))
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "cover", "param": {"showProgress": False},
+        }))
+        self.assertEqual(api.settings[-1],
+                         ("cover", {"showProgress": False}))
+        self.assertFalse(model.context("cover").show_progress)
+        tile_action = next(iter(MOSAIC_ACTIONS))
+        self.assertTrue(scheduler.handle_add({
+            "uuid": tile_action, "context": "tile",
+        }))
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "tile",
+            "param": {"secondaryAction": "volume-down", "audioTarget": "system"},
+        }))
+        self.assertEqual(api.settings[-1], ("tile", {
+            "secondaryAction": "volume-down", "audioTarget": "system",
+        }))
+        self.assertTrue(scheduler.stop(.5))
+
+    def test_nowplaying_progress_advances_on_ticks_without_extra_polls(self):
+        artwork_id = "5" * 64
+        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI,
+                               ("tl", "tr", "bl", "br"))
+        started = time.monotonic()
+        clock = lambda: NOW + timedelta(seconds=time.monotonic() - started)
+        payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
+                        position_seconds=30, artwork_id=artwork_id)
+
+        class Client:
+            def __init__(self): self.state_calls = 0
+            def get_state(self, cancelled=None):
+                self.state_calls += 1; return BridgeStateResult("ok", payload, 200)
+            def get_artwork(self, requested, cancelled=None):
+                return BridgeArtworkResult("ok", bundle, 200)
+
+        class Api:
+            def __init__(self): self.sends = []
+            def setPathIcon(self, context, image, text): return True
+            def setBaseDataIcon(self, context, image, text):
+                self.sends.append((context, image, text)); return True
+
+        client, api = Client(), Api()
+        scheduler = ProgressScheduler(api, client, ProgressActionModel(),
+                                      NowPlayingActionModel(), ArtworkBundleCache(),
+                                      clock=clock, poll_interval=5, tick_interval=.04)
+        scheduler.start()
+        scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"})
+        self.assertTrue(self._wait_for(lambda: len(api.sends) >= 2, 1))
+        self.assertEqual(client.state_calls, 1)
+        self.assertNotEqual(api.sends[0][1], api.sends[-1][1])
+        latest_svg = base64.b64decode(
+            api.sends[-1][1].split(",", 1)[1]).decode("utf-8")
+        self.assertIn('x="0" y="189" width="196" height="7"', latest_svg)
         self.assertTrue(scheduler.stop(.5))
 
     def test_mute_command_polls_immediately_and_updates_display(self):
@@ -964,7 +1029,7 @@ class PythonProgressTests(unittest.TestCase):
 
     def test_nowplaying_failed_fetch_retries_on_poll_and_playback_reuses_bundle(self):
         artwork_id = "b" * 64
-        bundle = ArtworkBundle(artwork_id, "color", "gray", ("1", "2", "3", "4"))
+        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI, ("1", "2", "3", "4"))
         playing = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
                         title="Track", artist="Artist", artwork_id=artwork_id)
 
@@ -988,11 +1053,15 @@ class PythonProgressTests(unittest.TestCase):
         scheduler = ProgressScheduler(api, client, ProgressActionModel(),
                                       NowPlayingActionModel(), ArtworkBundleCache(),
                                       clock=lambda: NOW, poll_interval=.04)
-        scheduler.start(); scheduler.handle_add({"uuid": NOW_PLAYING_UUID, "context": "cover"})
-        self.assertTrue(self._wait_for(lambda: api.images[-2:] == ["gray", "color"], 1))
+        scheduler.start(); scheduler.handle_add({
+            "uuid": NOW_PLAYING_UUID, "context": "cover", "param": {"showProgress": False},
+        })
+        gray = now_playing_artwork_data_uri(GRAYSCALE_URI, False, show_progress=False)
+        color = now_playing_artwork_data_uri(COLOR_URI, True, show_progress=False)
+        self.assertTrue(self._wait_for(lambda: api.images[-2:] == [gray, color], 1))
         self.assertEqual(api.images[0], "./assets/music.svg")
         self.assertGreaterEqual(client.fetches[1] - client.fetches[0], .03)
-        self.assertEqual(api.images.count("color"), 1)
+        self.assertEqual(api.images.count(color), 1)
         self.assertTrue(scheduler.stop(.5))
 
     def test_stale_artwork_response_cannot_install_after_context_recreation(self):

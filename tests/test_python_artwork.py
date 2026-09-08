@@ -47,11 +47,14 @@ from now_playing_action import (  # noqa: E402
     audio_icon_data_uri,
     normalize_audio_icon_color,
     normalize_media_snapshot,
+    normalize_secondary_action,
+    now_playing_artwork_data_uri,
     now_playing_text,
     transport_icon_data_uri,
     unavailable_media_snapshot,
     mute_toggle_data_uri,
 )
+from progress_state import ProgressState  # noqa: E402
 
 
 TOKEN = "A" * 43
@@ -404,15 +407,26 @@ console.log(JSON.stringify(values.map((title) => normalizeBridgeState({ ...base,
         model = NowPlayingActionModel()
         request = model.add({"uuid": ACTION_UUID, "context": "cover"})[0]
         playing = MediaSnapshot(True, True, True, "Track", "Artist", ARTWORK_ID, "ready")
-        color = model.render(request, playing, bundle)
+        progress = ProgressState(True, True, True, True, 45, 180, 1, NOW, "ready", "")
+        color = model.render(request, playing, bundle, progress, lambda: NOW)
         paused = model.render(request, MediaSnapshot(**{**playing.__dict__, "is_playing": False}),
-                              bundle)
-        resumed = model.render(request, playing, bundle)
+                              bundle, progress, lambda: NOW)
+        resumed = model.render(request, playing, bundle, progress, lambda: NOW)
         self.assertEqual((color.method, paused.method), ("setBaseDataIcon", "setBaseDataIcon"))
-        self.assertIs(color.image, bundle.color)
-        self.assertIs(paused.image, bundle.grayscale)
-        self.assertIs(resumed.image, color.image)
+        self.assertEqual(color.image, now_playing_artwork_data_uri(
+            bundle.color, True, progress, lambda: NOW))
+        self.assertEqual(paused.image, now_playing_artwork_data_uri(
+            bundle.grayscale, False, progress, lambda: NOW))
+        self.assertEqual(resumed.image, color.image)
         self.assertNotIn(color.image, bundle.tiles)
+        color_svg = base64.b64decode(color.image.split(",", 1)[1]).decode("utf-8")
+        paused_svg = base64.b64decode(paused.image.split(",", 1)[1]).decode("utf-8")
+        self.assertIn(f'href="{bundle.color}"', color_svg)
+        self.assertIn('<circle cx="168" cy="28" r="18" fill="#1DB954"/>', color_svg)
+        self.assertIn('d="M162 19l14 9-14 9z"', color_svg)
+        self.assertIn('width="49.000" height="7"', color_svg)
+        self.assertIn(f'href="{bundle.grayscale}"', paused_svg)
+        self.assertIn('d="M161 19h5v18h-5zm10 0h5v18h-5z"', paused_svg)
         mismatch = parse_artwork_bundle(payload(OTHER_ID), OTHER_ID)
         fallback = model.render(request, playing, mismatch)
         self.assertEqual((fallback.method, fallback.image, fallback.text),
@@ -423,7 +437,15 @@ console.log(JSON.stringify(values.map((title) => normalizeBridgeState({ ...base,
         self.assertIs(type(committed), tuple)
         self.assertTrue(all(type(value) is str for value in committed))
         self.assertEqual(committed, color.signature)
-        self.assertEqual(committed[1].encode("utf-8"), bundle.color.encode("utf-8"))
+        self.assertEqual(committed[1], color.image)
+
+        hidden_model = NowPlayingActionModel()
+        hidden_request = hidden_model.add({
+            "uuid": ACTION_UUID, "context": "hidden", "param": {"showProgress": False},
+        })[0]
+        hidden = hidden_model.render(hidden_request, playing, bundle, progress, lambda: NOW)
+        hidden_svg = base64.b64decode(hidden.image.split(",", 1)[1]).decode("utf-8")
+        self.assertNotIn('y="189"', hidden_svg)
 
     def test_mosaic_exact_mapping_bytes_fallbacks_and_pause_dedup(self):
         values = [uri(png(idat=bytes((index,)))) for index in range(1, 7)]
@@ -472,6 +494,23 @@ console.log(JSON.stringify(values.map((title) => normalizeBridgeState({ ...base,
         recreated = model.add({"uuid": action, "context": "one"})[0]
         self.assertGreater(recreated.generation, first.generation)
         self.assertEqual(set(request.context for request in model.requests()), {"one", "two"})
+
+        configured = model.add({
+            "uuid": action, "context": "configured",
+            "param": {"secondaryAction": "mute-toggle", "audioTarget": "system"},
+        })[0]
+        self.assertEqual(model.secondary_command_from_event({"context": "configured"}),
+                         "mute-toggle")
+        self.assertEqual(model.audio_target_from_event({"context": "configured"}), "system")
+        changed = model.receive_settings({
+            "context": "configured",
+            "settings": {"secondaryAction": "next", "audioTarget": "bad"},
+        })[0]
+        self.assertGreater(changed.version, configured.version)
+        self.assertEqual(model.secondary_command_from_event({"context": "configured"}), "next")
+        self.assertIsNone(model.audio_target_from_event({"context": "configured"}))
+        for invalid in (None, "open-url", 1, {}):
+            self.assertEqual(normalize_secondary_action(invalid), "none")
 
     def test_audio_actions_exact_mapping_and_identity_routing(self):
         self.assertEqual(AUDIO_ACTIONS, {

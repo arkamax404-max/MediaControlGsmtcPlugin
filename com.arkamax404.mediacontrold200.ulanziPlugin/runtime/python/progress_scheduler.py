@@ -9,7 +9,7 @@ from typing import Callable
 from bridge_client import BridgeClient
 from artwork_bundle import ArtworkBundleCache
 from now_playing_action import (AUDIO_ACTIONS, DEFAULT_AUDIO_TARGET, DISPLAY_ACTION_UUIDS,
-                                 MediaSnapshot,
+                                 MOSAIC_ACTIONS, MediaSnapshot,
                                  NowPlayingActionModel, normalize_media_snapshot,
                                  normalize_audio_target, TRANSPORT_DISPLAY,
                                  unavailable_media_snapshot)
@@ -194,8 +194,13 @@ class ProgressScheduler:
                     if current.action in AUDIO_ACTIONS:
                         target = normalize_audio_target(raw.get("audioTarget"))
                         settings["audioTarget"] = target or DEFAULT_AUDIO_TARGET
+                    elif current.action in MOSAIC_ACTIONS:
+                        settings = {
+                            "secondaryAction": current.secondary_action,
+                            "audioTarget": current.audio_target,
+                        }
                     elif current.action not in TRANSPORT_DISPLAY:
-                        return False
+                        settings = {"showProgress": current.show_progress}
                     self.api.setSettings(settings, context)
                 except Exception:
                     pass
@@ -213,7 +218,7 @@ class ProgressScheduler:
             return False
         context, payload = event.get("context"), event.get("payload")
         view = self.now_playing_model.context(context)
-        if (view is None or view.action not in AUDIO_ACTIONS
+        if (view is None or view.action not in (*AUDIO_ACTIONS, *MOSAIC_ACTIONS)
                 or not isinstance(payload, Mapping)
                 or payload.get("type") != "requestAudioSources"):
             return False
@@ -307,11 +312,11 @@ class ProgressScheduler:
                 self._retry = self._render_all(requests, state) or persistence_retry
             media_state = self._media_state
             if media_state is not None and (media_changed or artwork_changed
-                                            or dirty or self._now_retry):
+                                            or tick or dirty or self._now_retry):
                 self._now_retry = self._render_now_all(
                     now_requests, media_state,
                     self.artwork_cache.get(media_state.artwork_id)
-                    if media_state.artwork_id else None)
+                    if media_state.artwork_id else None, state)
             if (media_state is not None and state is not None
                     and (media_changed or artwork_changed or changed or tick or dirty
                          or self._large_retry)):
@@ -336,7 +341,9 @@ class ProgressScheduler:
                 if reservation is not None:
                     self._fetch_artwork(media_state, reservation)
             now = self._monotonic()
-            playing = ((requests or large_requests) and state and state.timeline_available and state.is_playing
+            playing = ((requests or large_requests
+                        or self.now_playing_model.artwork_progress_active())
+                       and state and state.timeline_available and state.is_playing
                        and extrapolate_position(state, self._clock) < state.duration_seconds)
             if playing and (tick or self._next_tick is None):
                 self._next_tick = now + self._tick_interval
@@ -366,14 +373,15 @@ class ProgressScheduler:
                 retry = True
         return retry
 
-    def _render_now_all(self, requests, state: MediaSnapshot, bundle) -> bool:
+    def _render_now_all(self, requests, state: MediaSnapshot, bundle,
+                        progress: ProgressState | None = None) -> bool:
         retry = False
         for request in requests:
             intent = None
             if self._stop.is_set():
                 return retry
             try:
-                intent = self.now_playing_model.render(request, state, bundle)
+                intent = self.now_playing_model.render(request, state, bundle, progress, self._clock)
                 if intent is None or not self.now_playing_model.reserve_send(intent):
                     continue
                 sender = (self.api.setBaseDataIcon if intent.method == "setBaseDataIcon"

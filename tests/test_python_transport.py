@@ -218,15 +218,19 @@ class PythonTransportTests(unittest.TestCase):
         client = Client()
         router = TransportRouter(client)
         router.configure_runtime(lambda _event: False, lambda: None,
-                                 lambda event: "system"
-                                 if event.get("context") in ("mute", "volume") else None)
+                                  lambda event: "system"
+                                  if event.get("context") in ("mute", "volume", "tile") else None,
+                                  lambda event: "mute-toggle"
+                                  if event.get("context") == "tile" else None)
         router.start()
         router.handle_run({"uuid": f"{PLUGIN_UUID}.mute-toggle", "context": "mute"})
         router.handle_run({"uuid": f"{PLUGIN_UUID}.volume-up", "context": "volume"})
         router.handle_run({"uuid": f"{PLUGIN_UUID}.next", "context": "next"})
-        self.assertTrue(wait_for(lambda: len(client.calls) == 3))
+        router.handle_run({"uuid": f"{PLUGIN_UUID}.artwork-top-left", "context": "tile"})
+        self.assertTrue(wait_for(lambda: len(client.calls) == 4))
         self.assertEqual(client.calls, [("mute-toggle", "system"),
-                                        ("volume-up", "system"), ("next", None)])
+                                         ("volume-up", "system"), ("next", None),
+                                         ("mute-toggle", "system")])
         self.assertTrue(router.stop())
 
     def test_intermediate_audio_error_does_not_block_next_fifo_command(self):

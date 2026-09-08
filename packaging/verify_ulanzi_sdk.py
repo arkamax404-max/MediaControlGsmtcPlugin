@@ -289,7 +289,7 @@ def inspect_sdk():
     if ([item.get("type") for item in now_items] != [2, 1]
             or now_items[0].get("path") != "./assets/music.svg"
             or now_items[0].get("textData") != "Track\nArtist"
-            or now_items[1].get("data") != "data:image/png;base64,color"
+            or not now_items[1].get("data", "").startswith("data:image/svg+xml;base64,")
             or now_items[1].get("textData") != "Track\nArtist"):
         raise RuntimeError(f"Unexpected integrated Now Playing payloads: {now_items}")
     mosaic_payloads = []
@@ -339,6 +339,22 @@ def inspect_sdk():
     def state_items():
         return [item for _, message in socket.messages
                 for item in message.get("param", {}).get("statelist", [])]
+    now_uuid = now_context.split("___")[0]
+    deadline = time.monotonic() + 1
+    while not any(item.get("uuid") == now_uuid and item.get("type") == 1
+                  for item in state_items()) and time.monotonic() < deadline:
+        time.sleep(0.005)
+    now_items = [item for item in state_items()
+                 if item.get("uuid") == now_uuid and item.get("type") == 1]
+    try:
+        now_svg = base64.b64decode(
+            now_items[-1]["data"].split(",", 1)[1]).decode("utf-8")
+    except Exception as exc:
+        raise RuntimeError("Integrated Now Playing artwork overlay is missing") from exc
+    if ('<circle cx="168" cy="28" r="18" fill="#1DB954"/>' not in now_svg
+            or not any(f'href="data:image/png;base64,{variant}"' in now_svg
+                       for variant in ("color", "gray"))):
+        raise RuntimeError(f"Unexpected integrated Now Playing artwork overlay: {now_items}")
     mute_uuid = audio_contexts[2].split("___")[0]
     deadline = time.monotonic() + 1
     while len([item for item in state_items() if item.get("uuid") == mute_uuid
