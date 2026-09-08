@@ -169,9 +169,11 @@ class ServerSecurityTests(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown(); self.server.server_close(); self.thread.join()
         self.loop.call_soon_threadsafe(self.loop.stop); self.loop_thread.join(); self.loop.close()
-    def request(self, path, method="GET", authorization=None):
+    def request(self, path, method="GET", authorization=None, instance=True):
         headers = {} if authorization is None else {"Authorization": authorization}
-        if authorization is not None: headers["X-Companion-Instance"] = self.lifecycle.instance_id
+        if authorization is not None and instance is not None:
+            headers["X-Companion-Instance"] = (self.lifecycle.instance_id
+                                                 if instance is True else instance)
         request = Request(self.origin + path, data=b"{}" if method == "POST" else None, method=method, headers=headers)
         return urlopen(request, timeout=2)
     def raw_command(self, values, instance=True):
@@ -207,6 +209,12 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(self.commands, [])
     def test_exact_auth_stop_order_and_command_refusal(self):
         self.assertEqual(self.raw_command([f"Bearer {TOKEN}"]), (200, {"ok": True}))
+        with self.assertRaises(HTTPError) as error:
+            self.request("/lifecycle/stop", "POST", f"Bearer {TOKEN}", instance="bad")
+        self.assertEqual(error.exception.code, 409)
+        error.exception.close()
+        self.assertEqual(self.lifecycle.status, "starting")
+        self.request_stop.assert_not_called()
         original = self.server.RequestHandlerClass._json; self.server.handle_error = Mock()
         def broken_write(handler, status, payload, **kwargs):
             if payload == {"ok": True}: raise BrokenPipeError("disconnected")
@@ -229,4 +237,18 @@ class CliStopTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://127.0.0.1:43821/lifecycle/stop")
         self.assertEqual(request.get_header("Authorization"), f"Bearer {TOKEN}")
         self.assertEqual(send.call_args.kwargs["timeout"], 2)
+
+    def test_parent_pid_cli_is_strict(self):
+        for arguments in (["--parent-pid"], ["--parent-pid", "0"],
+                          ["--parent-pid", "01"], ["--parent-pid", "abc"]):
+            self.assertEqual(bridge_main.main(arguments), 2)
+
+    def test_parent_watcher_signals_async_stop(self):
+        loop, stop = MagicMock(), MagicMock()
+        thread = bridge_main.watch_parent(loop, stop, 42, waiter=lambda pid: self.assertEqual(pid, 42))
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        callback = loop.call_soon_threadsafe.call_args.args[0]
+        callback()
+        stop.set.assert_called_once_with()
 if __name__ == "__main__": unittest.main()

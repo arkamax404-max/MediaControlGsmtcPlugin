@@ -1430,7 +1430,7 @@ test("manifest declares approved identity, functional entrypoint, and unique act
   assert.equal(manifest.Category, "Media Control for D200");
   assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
-  assert.equal(manifest.Version, "1.6.0");
+  assert.equal(manifest.Version, "1.7.0");
   const inspectors = Object.fromEntries(manifest.Actions.map((action) => [
     action.UUID.split(".").at(-1), action.PropertyInspectorPath,
   ]));

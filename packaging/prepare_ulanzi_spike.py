@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import shutil
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -55,6 +56,13 @@ REQUIRED_RUNTIME_FILES = (
     "_internal/licenses/plugin-common-python/LICENSE",
     "_internal/licenses/websocket-client/LICENSE",
 )
+REQUIRED_COMPANION_FILES = (
+    "GSMTCD200Companion.exe",
+    "_internal/LICENSE",
+    "_internal/THIRD_PARTY_NOTICES.md",
+    "_internal/build-dependencies.json",
+    "_internal/third-party-notices.json",
+)
 
 
 def is_within(path, parent):
@@ -93,9 +101,10 @@ class _ScriptReferences(HTMLParser):
                 self.sources.append(source)
 
 
-def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
+def prepare_package(plugin_source, runtime_bundle, companion_bundle, output_root, repo_root):
     plugin_source = Path(plugin_source).resolve()
     runtime_bundle = Path(runtime_bundle).resolve()
+    companion_bundle = Path(companion_bundle).resolve()
     output_root = Path(output_root).resolve()
     repo_root = Path(repo_root).resolve()
     if is_within(output_root, repo_root) or is_within(repo_root, output_root):
@@ -108,6 +117,17 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
                if not runtime_bundle.joinpath(name).is_file()]
     if missing:
         raise ValueError(f"Runtime bundle is incomplete: {', '.join(missing)}")
+    if not companion_bundle.is_dir():
+        raise ValueError("Companion bundle is unavailable")
+    missing = [name for name in REQUIRED_COMPANION_FILES
+               if not companion_bundle.joinpath(name).is_file()]
+    if missing:
+        raise ValueError(f"Companion bundle is incomplete: {', '.join(missing)}")
+    if (companion_bundle / "GSMTCD200Companion.exe").read_bytes()[:2] != b"MZ":
+        raise ValueError("Companion executable is invalid")
+    for item in companion_bundle.rglob("*"):
+        if item.is_symlink() or getattr(os.path, "isjunction", lambda _path: False)(item):
+            raise ValueError("Companion bundle contains links or junctions")
 
     manifest_path = plugin_source / "manifest.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
@@ -245,6 +265,7 @@ def prepare_package(plugin_source, runtime_bundle, output_root, repo_root):
     (target / "src").mkdir()
     shutil.copy2(plugin_source / "src" / "launcher.js", target / "src" / "launcher.js")
     shutil.copytree(runtime_bundle, target / "runtime")
+    shutil.copytree(companion_bundle, target / "runtime" / "companion")
     (target / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", "utf-8"
     )
@@ -258,11 +279,13 @@ def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-bundle", required=True)
+    parser.add_argument("--companion-bundle", required=True)
     parser.add_argument("--output-root", required=True)
     args = parser.parse_args()
     target = prepare_package(
         root / PLUGIN_FOLDER,
         args.runtime_bundle,
+        args.companion_bundle,
         args.output_root,
         root,
     )

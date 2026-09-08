@@ -22,6 +22,7 @@ MAX_ARTWORK_BODY_BYTES = 4_001_000
 INSTANCE_ID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
+VERSION_PATTERN = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z")
 COMMAND_PATHS = {
     "previous": "/command/previous",
     "toggle": "/command/toggle",
@@ -83,6 +84,13 @@ class BridgeArtworkResult:
         return self.status == "ok"
 
 
+@dataclass(frozen=True)
+class BridgeHealthResult:
+    status: str
+    instance_id: str | None = None
+    companion_version: str | None = None
+
+
 class BridgeClient:
     def __init__(
         self,
@@ -114,6 +122,38 @@ class BridgeClient:
         self._request_available.set()
         self._request_active = False
 
+    def probe_health(self) -> BridgeHealthResult:
+        status, _token, instance_id, _status_code, version = self._compatibility()
+        return BridgeHealthResult(
+            status,
+            instance_id if status == "compatible" else None,
+            version if status == "compatible" else None,
+        )
+
+    def stop_owned(self, instance_id: str) -> bool:
+        if not isinstance(instance_id, str) or not INSTANCE_ID_PATTERN.fullmatch(instance_id):
+            return False
+        compatibility, token, current_id, _status_code, _version = self._compatibility()
+        if compatibility != "compatible" or current_id != instance_id:
+            return False
+        request = Request(
+            self.origin + "/lifecycle/stop", data=b"{}", method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "X-Companion-Instance": instance_id,
+            },
+        )
+        try:
+            with self._opener(request, timeout=self.timeout) as response:
+                response.read(1025)
+                return 200 <= response.status < 300
+        except HTTPError as error:
+            error.close()
+        except Exception:
+            pass
+        return False
+
     def execute(self, command: str, cancelled: Callable[[], bool] | None = None,
                 audio_target: str | None = None) -> BridgeResult:
         if not self._claim_request(cancelled):
@@ -126,7 +166,7 @@ class BridgeClient:
     def _execute(self, command: str, audio_target: str | None = None) -> BridgeResult:
         if command not in COMMAND_PATHS:
             return BridgeResult(str(command), "unsupported")
-        compatibility, token, instance_id, status_code = self._compatibility()
+        compatibility, token, instance_id, status_code, _version = self._compatibility()
         if compatibility != "compatible":
             return BridgeResult(command, compatibility, status_code)
         body = ({"audio_target": audio_target}
@@ -164,7 +204,7 @@ class BridgeClient:
             self._release_request()
 
     def _get_state(self, cancelled: Callable[[], bool] | None = None) -> BridgeStateResult:
-        compatibility, token, instance_id, status_code = self._compatibility()
+        compatibility, token, instance_id, status_code, _version = self._compatibility()
         if compatibility != "compatible":
             return BridgeStateResult(compatibility, status_code=status_code)
         request = Request(
@@ -208,7 +248,7 @@ class BridgeClient:
             self._release_request()
 
     def _get_artwork(self, artwork_id: str) -> BridgeArtworkResult:
-        compatibility, token, _instance_id, status_code = self._compatibility()
+        compatibility, token, _instance_id, status_code, _version = self._compatibility()
         if compatibility != "compatible":
             return BridgeArtworkResult(compatibility, status_code=status_code)
         request = Request(
@@ -255,11 +295,13 @@ class BridgeClient:
             self._request_active = False
             self._request_available.set()
 
-    def _compatibility(self) -> tuple[str, str | None, str | None, int | None]:
+    def _compatibility(
+        self,
+    ) -> tuple[str, str | None, str | None, int | None, str | None]:
         try:
             token = validate_token(self._token_loader())
         except Exception:
-            return "configuration", None, None, None
+            return "configuration", None, None, None, None
         request = Request(
             self.origin + "/health",
             method="GET",
@@ -268,31 +310,34 @@ class BridgeClient:
         try:
             with self._opener(request, timeout=self.timeout) as response:
                 if not 200 <= response.status < 300:
-                    return "unavailable", token, None, response.status
+                    return "unavailable", token, None, response.status, None
                 body = response.read(513)
             if len(body) > 512:
-                return "unavailable", token, None, None
+                return "unavailable", token, None, None, None
             health = json.loads(body.decode("utf-8"))
         except HTTPError as error:
             status_code = error.code
             error.close()
-            return "unavailable", token, None, status_code
+            return "unavailable", token, None, status_code, None
         except Exception:
-            return "unavailable", token, None, None
+            return "unavailable", token, None, None, None
         if not isinstance(health, dict) or health.get("service") != "d200-gsmtc-bridge":
-            return "unavailable", token, None, None
+            return "unavailable", token, None, None, None
         major = health.get("api_major")
         minor = health.get("api_minor")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 65535
             for value in (major, minor)
         ):
-            return "unavailable", token, None, None
+            return "unavailable", token, None, None, None
         instance_id = health.get("instance_id")
         if not isinstance(instance_id, str) or not INSTANCE_ID_PATTERN.fullmatch(instance_id):
-            return "unavailable", token, None, None
+            return "unavailable", token, None, None, None
+        version = health.get("companion_version")
+        if not isinstance(version, str) or not VERSION_PATTERN.fullmatch(version):
+            return "unavailable", token, None, None, None
         if major != API_MAJOR or minor < MIN_API_MINOR:
-            return "incompatible", token, instance_id, None
+            return "incompatible", token, instance_id, None, version
         if health.get("status") not in ("ready", "degraded"):
-            return "unavailable", token, instance_id, None
-        return "compatible", token, instance_id, None
+            return "unavailable", token, instance_id, None, version
+        return "compatible", token, instance_id, None, version

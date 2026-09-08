@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence, TextIO
 
 from bridge_client import BridgeClient, bridge_origin_from_future
+from companion_supervisor import CompanionSupervisor
 from artwork_bundle import ArtworkBundleCache
 from now_playing_action import NowPlayingActionModel
 from largeitem_action import LargeItemActionModel
@@ -79,6 +80,7 @@ class Runtime:
         setup_controller_factory: Callable[[object], SetupActionController] = SetupActionController,
         artwork_cache_factory: Callable[[], ArtworkBundleCache] = ArtworkBundleCache,
         progress_scheduler_factory: Callable[..., ProgressScheduler] = ProgressScheduler,
+        companion_supervisor_factory: Callable[[BridgeClient], CompanionSupervisor] | None = None,
     ) -> None:
         self._api_factory = api_factory
         self._api = None
@@ -95,6 +97,7 @@ class Runtime:
         self._api_wait_thread: threading.Thread | None = None
         self._api_wait_done = threading.Event()
         self._api_wait_failed = False
+        self._companion_stop_called = False
         self.stop_reason: str | None = None
         self.router = router
         self.progress_model: ProgressActionModel | None = None
@@ -103,12 +106,16 @@ class Runtime:
         self.setup_controller: SetupActionController | None = None
         self.artwork_cache: ArtworkBundleCache | None = None
         self.progress_scheduler: ProgressScheduler | None = None
+        self.companion_supervisor: CompanionSupervisor | None = None
         self._progress_model_factory = progress_model_factory
         self._now_playing_model_factory = now_playing_model_factory
         self._largeitem_model_factory = largeitem_model_factory
         self._setup_controller_factory = setup_controller_factory
         self._artwork_cache_factory = artwork_cache_factory
         self._progress_scheduler_factory = progress_scheduler_factory
+        self._companion_supervisor_factory = companion_supervisor_factory or (
+            lambda client: CompanionSupervisor(client_factory=lambda: client)
+        )
         self._router_factory = router_factory or (
             lambda arguments: TransportRouter(
                 BridgeClient(origin=bridge_origin_from_future(arguments.future))
@@ -222,6 +229,13 @@ class Runtime:
                     failure = failure or "worker_alive"
             except Exception:
                 failure = failure or "router_stop_failed"
+        if self.companion_supervisor is not None and not self._companion_stop_called:
+            self._companion_stop_called = True
+            try:
+                if not self.companion_supervisor.shutdown():
+                    failure = failure or "companion_stop_failed"
+            except Exception:
+                failure = failure or "companion_stop_failed"
         if api is not None:
             try:
                 if not self._close_api_once(api):
@@ -270,6 +284,11 @@ class Runtime:
             self._api = api
             if not self._stop_requested.is_set() and self.router is None:
                 self.router = self._router_factory(arguments)
+            if not self._stop_requested.is_set() and self.router is not None:
+                client = getattr(self.router, "client", None)
+                if isinstance(client, BridgeClient):
+                    self.companion_supervisor = self._companion_supervisor_factory(client)
+                    self.companion_supervisor.ensure_ready()
             if not self._stop_requested.is_set() and self.router is not None:
                 self.router.start()
             if not self._stop_requested.is_set():

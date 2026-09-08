@@ -56,6 +56,7 @@ py -3.14 -m venv "$runtimeRoot\venv"
 New-Item -ItemType Directory -Path "$runtimeRoot\package"
 python .\packaging\prepare_ulanzi_spike.py `
   --runtime-bundle "$runtimeRoot\dist\runtime" `
+  --companion-bundle "C:\verified-companion\GSMTCD200Companion" `
   --output-root "$runtimeRoot\package"
 ```
 
@@ -102,8 +103,9 @@ or unmute speaker icon; all three audio actions retain independent source and ic
 settings and volume keys keep their host-rendered label. Previous, Play/Pause, and Next also
 retain independent icon colors; the dedicated Play/Pause key uses that color while switching
 between play and pause glyphs, and Previous/Next render their transport labels. Generated
-executables and transformed manifests do not belong in the repository, and this
-packaged runtime does not replace the companion installer.
+executables and transformed manifests do not belong in the repository. The package embeds
+a separately verified companion bundle under `runtime\companion`; new releases therefore
+ship one plugin ZIP and do not require a companion-installer asset.
 
 Run events enter a bounded 16-item queue and one serial HTTP worker. Progress polls
 share that client, so each health request and its following state or command request

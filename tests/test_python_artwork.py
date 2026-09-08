@@ -105,7 +105,8 @@ def mute_uri(label, waves=False, color=DEFAULT_AUDIO_ICON_COLOR):
 
 
 def health():
-    return {"service": "d200-gsmtc-bridge", "api_major": 1, "api_minor": 1,
+    return {"service": "d200-gsmtc-bridge", "companion_version": "1.4.0",
+            "api_major": 1, "api_minor": 1,
             "status": "ready", "instance_id": INSTANCE_ID}
 
 

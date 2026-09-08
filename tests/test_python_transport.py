@@ -33,6 +33,7 @@ PLUGIN_UUID = "com.arkamax404.ulanzi.mediacontrol"
 def health(**overrides):
     return {
         "service": "d200-gsmtc-bridge",
+        "companion_version": "1.4.0",
         "api_major": 1,
         "api_minor": 1,
         "status": "ready",
@@ -207,6 +208,18 @@ class PythonTransportTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(json.loads(opener.calls[1][0].data), {"audio_target": unicode_target})
         self.assertLessEqual(len(opener.calls[1][0].data), 1024)
+
+    def test_stop_owned_rechecks_authenticated_instance(self):
+        opener = RecordingOpener([Response(payload=health()), Response(payload={"ok": True})])
+        client = BridgeClient(token_loader=lambda: TOKEN, opener=opener)
+
+        self.assertTrue(client.stop_owned(INSTANCE_ID))
+        request = opener.calls[1][0]
+        self.assertEqual((request.full_url, request.method),
+                         (f"{BRIDGE_ORIGIN}/lifecycle/stop", "POST"))
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers["x-companion-instance"], INSTANCE_ID)
+        self.assertFalse(client.stop_owned("bad"))
 
     def test_router_resolves_target_from_mute_context_only(self):
         class Client:

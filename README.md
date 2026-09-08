@@ -5,19 +5,15 @@ Ulanzi D200 through Windows GSMTC, Core Audio, a loopback Python bridge, and an 
 Studio plugin. It requires no cloud service or account configuration: every component runs
 on the same machine and communicates over loopback only.
 
-> **Important — the plugin does not work without the companion bridge.** The bridge is a
-> separate component that must be installed and running on the same Windows machine
-> before the plugin can show media state. Without it, every key renders its `Offline`
-> or `Companion setup required` fallback. See [Companion setup](#companion-setup) below.
+> **The plugin package includes its companion bridge.** It starts the bundled bridge when
+> Studio opens and stops that owned process when Studio closes. Compatible external
+> installations are reused; older companions are replaced by the bundled version.
 
 ## Requirements
 
 - Windows 10/11
 - Spotify Desktop
 - Ulanzi Studio 2.1.4 or newer with a D200 device
-- **The companion bridge, installed and running** — either through the companion
-  installer (recommended, see `installer\README.md`) or manually with Python 3.11 or
-  newer. This is mandatory: the plugin has no media data source without it.
 
 The plugin package itself is self-contained: it runs on Ulanzi Studio's embedded Node.js
 and a frozen Python runtime, so plugin users do not install Python, Node.js, or npm.
@@ -34,16 +30,17 @@ Two pieces cooperate:
 2. **Plugin** — an Ulanzi Studio plugin with fourteen actions. A small Node.js launcher
    starts the bundled frozen Python runtime, which polls the bridge and renders every key.
 
-### Companion setup
+### Companion lifecycle
 
-The companion bridge **must be installed and running before the plugin can display
-anything**. Every key shows `Offline` or `Companion setup required` until the bridge
-answers on `http://127.0.0.1:43821/health`.
+The packaged plugin supervises an isolated companion process over authenticated loopback.
+No separate companion installation is required for new users. Existing installations are
+supported during migration: an external companion at least as new as the bundled version
+is reused, while an older compatible instance is stopped by authenticated `instance_id`
+before the embedded companion starts.
 
-Option A — prebuilt installer (recommended): download
-`GSMTCD200Companion-<version>-local-unsigned.exe` from the latest
-[GitHub release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases)
-and run it. It installs the bridge under
+Legacy option — standalone installation: v1.6.0 is the final release that includes the
+separate [`GSMTCD200Companion-1.3.0-local-unsigned.exe`](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases/tag/v1.6.0).
+It installs the bridge under
 `%LOCALAPPDATA%\Programs\GSMTCD200Controller`, registers an interactive
 per-user scheduled task that starts the bridge silently at every logon, applies token
 ACL hardening, and keeps the token, logs, and diagnostics under
@@ -51,7 +48,7 @@ ACL hardening, and keeps the token, logs, and diagnostics under
 window on the desktop. Advanced users can build the same installer from source with
 `installer\build_installer.ps1` as described in `installer\README.md`.
 
-Option B — manual: from the project root,
+Development option — manual: from the project root,
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -70,10 +67,6 @@ bundle can be produced without starting the bridge using
 `python -m d200_bridge --diagnose`.
 
 ### Plugin installation
-
-Prerequisite: the companion bridge must already be installed and running (see
-[Companion setup](#companion-setup)); otherwise every key will show its offline fallback
-right after installation.
 
 - **Ulanzi Community Store**: once published, search for *Media Control for D200*.
 - **Manual**: download `com.arkamax404.mediacontrold200.ulanziPlugin.zip` from the
@@ -308,7 +301,7 @@ transitions may temporarily expose no duration; the key then shows `No timeline`
 
 | Symptom | Check |
 |---|---|
-| Keys show `Offline` | The companion bridge is not running. If it is not installed yet, run the prebuilt installer from the [latest release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases). With the installer, run the `GSMTCD200Controller-Companion` scheduled task (it also starts automatically at logon); manually, run `python -m d200_bridge`. Verify `http://127.0.0.1:43821/health`. Keep both apps on the same machine. |
+| Keys show `Offline` | Restart Studio so the embedded companion can start. Verify `http://127.0.0.1:43821/health`. Legacy external installations may also start `GSMTCD200Controller-Companion` from Task Scheduler. |
 | Keys show `Offline` right after a reboot | Wait about ten seconds after logon — the scheduled task starts the bridge with a short delay. If it still does not come up, start the task manually and check the logs under `%LOCALAPPDATA%\GSMTCD200Controller\logs`. |
 | Installer reports a legacy task ACL repair failure | Open Task Scheduler as administrator, delete only `\GSMTCD200Controller-Companion`, then rerun the installer. |
 | Keys show `Companion setup required` | The plugin could not read the bridge token; confirm the companion was set up for the same Windows user. |

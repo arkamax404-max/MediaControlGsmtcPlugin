@@ -1,10 +1,9 @@
 {
   "cover": "resources/store/cover.png",
   "screenshots": [
-    "resources/store/banner-actions.png",
-    "resources/store/banner-volume.png"
+    "resources/store/banner.jpeg"
   ],
-  "longDescription": "Media Control for D200 brings local Windows media controls and now-playing displays to Ulanzi D200. Large Now Playing uses the reserved center display for artwork, title, artist, playback state, progress, and time. Setup Large Display provides a guided Install, Repair, and Restore workflow with authenticated one-shot requests, complete verified backups, atomic profile updates, rollback, and an attempted Studio restart whose failure is reported without undoing a validated profile result. The plugin also includes color/grayscale Now Playing artwork, live transport state, selectable per-key control for system volume or active application sessions, circular track progress with per-key colors, and a four-key artwork mosaic. Volume Up, Volume Down, and Mute Toggle remember independent sources; optional Studio titles can label the controlled source. Everything runs locally through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The companion bridge must be installed and running for live media state.",
+  "longDescription": "Media Control for D200 brings local Windows media controls and now-playing displays to Ulanzi D200. Large Now Playing uses the reserved center display for artwork, title, artist, playback state, progress, and time. Setup Large Display provides a guided Install, Repair, and Restore workflow with authenticated one-shot requests, complete verified backups, atomic profile updates, rollback, and an attempted Studio restart whose failure is reported without undoing a validated profile result. The plugin also includes color/grayscale Now Playing artwork, live transport state, selectable per-key control for system volume or active application sessions, circular track progress with per-key colors, and a four-key artwork mosaic. Volume Up, Volume Down, and Mute Toggle remember independent sources; optional Studio titles can label the controlled source. Everything runs locally through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The plugin package includes and supervises its own companion bridge while remaining compatible with newer external installations.",
   "deviceTypes": [
     "deck"
   ],

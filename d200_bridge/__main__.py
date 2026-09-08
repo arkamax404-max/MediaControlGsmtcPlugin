@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import logging
 import signal
 import sys
@@ -56,7 +57,35 @@ def restore_signal_handlers(previous_handlers):
             pass
 
 
-async def run_bridge(token, lifecycle=None):
+def wait_for_parent_exit(parent_pid):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+    kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.OpenProcess(0x00100000, False, parent_pid)
+    if not handle:
+        return
+    try:
+        kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def watch_parent(loop, stop_event, parent_pid, waiter=wait_for_parent_exit):
+    def wait_and_stop():
+        try:
+            waiter(parent_pid)
+        finally:
+            loop.call_soon_threadsafe(stop_event.set)
+
+    thread = threading.Thread(target=wait_and_stop, name="companion-parent-watch", daemon=True)
+    thread.start()
+    return thread
+
+
+async def run_bridge(token, lifecycle=None, parent_pid=None, parent_waiter=wait_for_parent_exit):
     global GSMTCAdapter, artwork_processor, CoreAudioController, create_server, MediaStateCache
     if GSMTCAdapter is None:
         from .gsmtc import GSMTCAdapter as _value
@@ -77,14 +106,20 @@ async def run_bridge(token, lifecycle=None):
     lifecycle = lifecycle or CompanionLifecycle()
     stop_event = asyncio.Event()
     previous_handlers = install_signal_handlers(loop, stop_event)
+    if parent_pid is not None:
+        watch_parent(loop, stop_event, parent_pid, parent_waiter)
     adapter = audio = server = server_thread = refresh_task = None
     server_started = False
     try:
         cache = MediaStateCache()
         adapter = GSMTCAdapter(cache)
         await adapter.start()
+        if stop_event.is_set():
+            return
         audio = CoreAudioController(cache)
         await asyncio.to_thread(audio.refresh)
+        if stop_event.is_set():
+            return
         server = create_server(
             cache, adapter.command, loop, audio_commander=audio.command,
             artwork_lookup=artwork_processor.get_cached, token=token, lifecycle=lifecycle,
@@ -162,6 +197,15 @@ def stop_running_companion():
 
 def main(argv=None):
     arguments = sys.argv[1:] if argv is None else argv
+    parent_pid = None
+    if len(arguments) == 2 and arguments[0] == "--parent-pid":
+        try:
+            parent_pid = int(arguments[1])
+        except (TypeError, ValueError):
+            return 2
+        if parent_pid <= 0 or str(parent_pid) != arguments[1]:
+            return 2
+        arguments = []
     if arguments == ["--stop"]:
         try:
             return stop_running_companion()
@@ -194,7 +238,7 @@ def main(argv=None):
         paths = CompanionPaths.from_environment()
         token = ensure_token(paths.token)
         configure_logging(paths.logs, token=token, console=True)
-        asyncio.run(run_bridge(token=token))
+        asyncio.run(run_bridge(token=token, parent_pid=parent_pid))
     except KeyboardInterrupt:
         return 0
     except (OSError, RuntimeError, ValueError):

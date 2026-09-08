@@ -58,8 +58,15 @@ GRAYSCALE_URI = "data:image/png;base64,Z3JheQ=="
 
 
 def health(**overrides):
-    return {"service": "d200-gsmtc-bridge", "api_major": 1, "api_minor": 1,
-            "status": "ready", "instance_id": INSTANCE_ID, **overrides}
+    return {
+        "service": "d200-gsmtc-bridge",
+        "companion_version": "1.4.0",
+        "api_major": 1,
+        "api_minor": 1,
+        "status": "ready",
+        "instance_id": INSTANCE_ID,
+        **overrides,
+    }
 
 
 def state(**overrides):

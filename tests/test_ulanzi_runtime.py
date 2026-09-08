@@ -7,6 +7,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).parents[1]
@@ -88,6 +89,16 @@ class UlanziRuntimeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.runtime_module = load_runtime_module()
 
+    def runtime_with_fake_supervisor(self, api):
+        supervisor = Mock(
+            ensure_ready=Mock(return_value=True),
+            shutdown=Mock(return_value=True),
+        )
+        return self.runtime_module.Runtime(
+            lambda: api,
+            companion_supervisor_factory=lambda _client: supervisor,
+        )
+
     def test_parses_host_arguments_and_preserves_future_values_exactly(self):
         raw = ["localhost", "4567", "es-ES", "--future=value with spaces", 'quoted"value']
         parsed = self.runtime_module.parse_host_arguments(raw)
@@ -110,6 +121,42 @@ class UlanziRuntimeTests(unittest.TestCase):
         self.assertEqual((parsed.address, parsed.port, parsed.language), ("10.0.0.2", "3906", "en"))
         self.assertEqual(parsed.raw, ("10.0.0.2",))
 
+    def test_runtime_supervises_only_real_bridge_clients(self):
+        from bridge_client import BridgeClient, BridgeStateResult
+        from companion_supervisor import CompanionStartResult
+
+        class Client(BridgeClient):
+            def __init__(self):
+                super().__init__(token_loader=lambda: "A" * 43)
+            def get_state(self, cancelled=None):
+                return BridgeStateResult("unavailable")
+
+        class Router:
+            def __init__(self):
+                self.client = Client()
+            def start(self): return True
+            def stop(self, _timeout=None): return True
+            def handle_run(self, _event): return False
+
+        api = FakeApi()
+        router = Router()
+        supervisor = Mock(
+            ensure_ready=Mock(return_value=CompanionStartResult("ready", False)),
+            shutdown=Mock(return_value=True),
+        )
+        runtime = self.runtime_module.Runtime(
+            lambda: api,
+            router=router,
+            companion_supervisor_factory=lambda client: (
+                supervisor if client is router.client else self.fail("wrong client")
+            ),
+        )
+
+        self.assertEqual(runtime.run(
+            self.runtime_module.parse_host_arguments([]), io.StringIO("")), 0)
+        supervisor.ensure_ready.assert_called_once_with()
+        supervisor.shutdown.assert_called_once_with()
+
     def test_profile_assistant_dispatch_preserves_exact_request_argument(self):
         calls = []
         fake = types.SimpleNamespace(profile_assistant_main=lambda argv: calls.append(argv) or 17)
@@ -127,7 +174,7 @@ class UlanziRuntimeTests(unittest.TestCase):
 
     def test_websocket_close_stops_runtime_once(self):
         api = FakeApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         arguments = self.runtime_module.parse_host_arguments(["127.0.0.1", "3906", "en", "future"])
         read_gate = threading.Event()
 
@@ -155,7 +202,7 @@ class UlanziRuntimeTests(unittest.TestCase):
 
     def test_runtime_owns_shared_client_scheduler_and_exact_pinned_callbacks(self):
         api = FakeApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         thread = threading.Thread(target=runtime.run,
                                   args=(self.runtime_module.parse_host_arguments([]), io.StringIO("")))
         thread.start(); self.assertTrue(api.connected.wait(1)); thread.join(2)
@@ -218,7 +265,7 @@ class UlanziRuntimeTests(unittest.TestCase):
 
     def test_stdin_eof_and_repeated_stop_are_idempotent(self):
         api = FakeApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         arguments = self.runtime_module.parse_host_arguments([])
 
         self.assertEqual(runtime.run(arguments, io.StringIO("")), 0)
@@ -317,7 +364,7 @@ class UlanziRuntimeTests(unittest.TestCase):
                 self.wait_release.set()
 
         api = BlockingCloseApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         run_codes = []
         input_release = threading.Event()
 
@@ -519,7 +566,7 @@ class UlanziRuntimeTests(unittest.TestCase):
 
     def test_internal_onclose_during_api_close_returns_immediately(self):
         api = FakeApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         callback_results = []
         callback_elapsed = []
         original_close = api.close
@@ -559,7 +606,7 @@ class UlanziRuntimeTests(unittest.TestCase):
                 self.release_close.wait(10)
 
         api = BlockingCloseApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         run_codes = []
         run_thread = threading.Thread(target=lambda: run_codes.append(
             runtime.run(self.runtime_module.parse_host_arguments([]), io.StringIO(""))
@@ -584,7 +631,7 @@ class UlanziRuntimeTests(unittest.TestCase):
                 self.close_calls += 1
 
         api = BlockingWaitApi()
-        runtime = self.runtime_module.Runtime(lambda: api)
+        runtime = self.runtime_with_fake_supervisor(api)
         run_codes = []
         run_thread = threading.Thread(target=lambda: run_codes.append(
             runtime.run(self.runtime_module.parse_host_arguments([]), io.StringIO(""))

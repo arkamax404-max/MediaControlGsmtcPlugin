@@ -26,6 +26,13 @@ def load_module(name):
     return module
 
 
+def write_synthetic_bundle(root, names):
+    for relative in names:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"MZsynthetic" if path.suffix == ".exe" else b"evidence")
+
+
 class PackagingContractTests(unittest.TestCase):
     def test_approved_plugin_uses_store_root_layout(self):
         preparer = load_module("prepare_ulanzi_spike.py")
@@ -68,13 +75,14 @@ class PackagingContractTests(unittest.TestCase):
         protected_before = {name: (plugin / name).read_bytes() for name in protected}
         manifest_before = protected_before["manifest.json"]
         package_before = protected_before["package.json"]
-        with tempfile.TemporaryDirectory() as runtime_dir, tempfile.TemporaryDirectory() as output_dir:
+        with (tempfile.TemporaryDirectory() as runtime_dir,
+              tempfile.TemporaryDirectory() as companion_dir,
+              tempfile.TemporaryDirectory() as output_dir):
             runtime = Path(runtime_dir)
-            for relative in preparer.REQUIRED_RUNTIME_FILES:
-                path = runtime / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"runtime" if path.suffix == ".exe" else b"license")
-            target = preparer.prepare_package(plugin, runtime, output_dir, ROOT)
+            companion = Path(companion_dir)
+            write_synthetic_bundle(runtime, preparer.REQUIRED_RUNTIME_FILES)
+            write_synthetic_bundle(companion, preparer.REQUIRED_COMPANION_FILES)
+            target = preparer.prepare_package(plugin, runtime, companion, output_dir, ROOT)
             prepared = json.loads((target / "manifest.json").read_text("utf-8"))
             prepared_package = json.loads((target / "package.json").read_text("utf-8"))
             source_package = json.loads(package_before)
@@ -205,6 +213,8 @@ class PackagingContractTests(unittest.TestCase):
             self.assertTrue((target / "src" / "launcher.js").is_file())
             self.assertTrue(all((target / "runtime" / name).is_file()
                                 for name in preparer.REQUIRED_RUNTIME_FILES))
+            self.assertTrue(all((target / "runtime" / "companion" / name).is_file()
+                                for name in preparer.REQUIRED_COMPANION_FILES))
             self.assertFalse((target / "src" / "app.js").exists())
             inspector_files = {
                 path.relative_to(target).as_posix()
@@ -245,25 +255,30 @@ class PackagingContractTests(unittest.TestCase):
     def test_external_launcher_package_rejects_missing_runtime_license(self):
         preparer = load_module("prepare_ulanzi_spike.py")
         plugin = ROOT / preparer.PLUGIN_FOLDER
-        with tempfile.TemporaryDirectory() as runtime_dir, tempfile.TemporaryDirectory() as output_dir:
+        with (tempfile.TemporaryDirectory() as runtime_dir,
+              tempfile.TemporaryDirectory() as companion_dir,
+              tempfile.TemporaryDirectory() as output_dir):
             runtime = Path(runtime_dir)
+            companion = Path(companion_dir)
+            write_synthetic_bundle(companion, preparer.REQUIRED_COMPANION_FILES)
             (runtime / "MediaControlRuntime.exe").write_bytes(b"runtime")
             with self.assertRaisesRegex(ValueError, "_internal/licenses/project/LICENSE"):
-                preparer.prepare_package(plugin, runtime, output_dir, ROOT)
+                preparer.prepare_package(plugin, runtime, companion, output_dir, ROOT)
 
     def test_spike_preparer_resolves_root_plugin_from_external_cwd(self):
         preparer = load_module("prepare_ulanzi_spike.py")
         with (tempfile.TemporaryDirectory() as runtime_dir,
+              tempfile.TemporaryDirectory() as companion_dir,
               tempfile.TemporaryDirectory() as output_dir,
               tempfile.TemporaryDirectory() as cwd):
             runtime = Path(runtime_dir)
-            for relative in preparer.REQUIRED_RUNTIME_FILES:
-                path = runtime / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"runtime" if path.suffix == ".exe" else b"license")
+            companion = Path(companion_dir)
+            write_synthetic_bundle(runtime, preparer.REQUIRED_RUNTIME_FILES)
+            write_synthetic_bundle(companion, preparer.REQUIRED_COMPANION_FILES)
             result = subprocess.run(
                 [sys.executable, "-B", str(PACKAGING / "prepare_ulanzi_spike.py"),
-                 "--runtime-bundle", str(runtime), "--output-root", output_dir],
+                 "--runtime-bundle", str(runtime),
+                 "--companion-bundle", str(companion), "--output-root", output_dir],
                 cwd=cwd, capture_output=True, text=True, timeout=10, check=True,
             )
             target = Path(result.stdout.strip())

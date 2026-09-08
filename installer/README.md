@@ -1,6 +1,8 @@
-# Per-User Companion Installer Foundation
+# Legacy Per-User Companion Installer
 
-Builds an unsigned local Inno Setup 7.1 companion-only installer. It does not
+This installer remains available for migration and compatibility testing. New plugin
+packages embed and supervise the companion directly, so new users do not need this
+separate installer. It builds an unsigned local Inno Setup 7.1 companion-only installer. It does not
 manage the Ulanzi plugin, signing, upgrades, version/file rollback, or releases.
 
 ## Compile

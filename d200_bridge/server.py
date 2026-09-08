@@ -56,6 +56,9 @@ def create_server(
             if self._protected() and not self._authorized():
                 return
             if self.path == "/lifecycle/stop":
+                if self.headers.get_all("X-Companion-Instance", []) \
+                        and not self._instance_matches():
+                    return
                 lifecycle.set_status("stopping")
                 if request_stop is not None:
                     request_stop()
