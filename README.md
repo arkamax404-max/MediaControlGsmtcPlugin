@@ -68,6 +68,8 @@ bundle can be produced without starting the bridge using
 
 ### Plugin installation
 
+- **Current release**: v1.7.1 is distributed as one plugin package with its supervised
+  companion bridge embedded; no separate companion installation is required.
 - **Ulanzi Community Store**: once published, search for *Media Control for D200*.
 - **Manual**: download `com.arkamax404.mediacontrold200.ulanziPlugin.zip` from the
   latest [GitHub release](https://github.com/arkamax404-max/MediaControlGsmtcPlugin/releases),
@@ -110,7 +112,7 @@ the same close and validation flow, followed by an attempted automatic relaunch.
 
 | Action | Press behavior | Key display |
 |---|---|---|
-| Now Playing | Toggle play/pause | Full artwork with playback badge, optional bottom progress bar, title, and artist |
+| Now Playing | Toggle play/pause | Full artwork with configurable playback badge and progress accent, title, and artist |
 | Large Now Playing | None (display only) | Center display with artwork, title, artist, playback state, progress, and time |
 | Previous | Previous track | Transport icon with `Previous` label |
 | Play/Pause | Toggle play/pause | `Pause` icon while playing, `Play` icon while paused |
@@ -119,10 +121,10 @@ the same close and validation flow, followed by an attempted automatic relaunch.
 | Volume Down | Selected source volume −5 points | Volume icon with the selected percentage |
 | Mute Toggle | Mute or unmute the selected source | Generated key: selected volume percentage at the top, speaker icon below |
 | Track Progress | Cycle time mode | Circular progress arc with the selected time |
-| Artwork Top Left | None (display only) | Top-left 196×196 quadrant of the artwork |
-| Artwork Top Right | None (display only) | Top-right quadrant of the artwork |
-| Artwork Bottom Left | None (display only) | Bottom-left quadrant of the artwork |
-| Artwork Bottom Right | None (display only) | Bottom-right quadrant of the artwork |
+| Artwork Top Left | Configured secondary action or none | Top-left 196×196 quadrant with an optional corner action badge |
+| Artwork Top Right | Configured secondary action or none | Top-right quadrant with an optional corner action badge |
+| Artwork Bottom Left | Configured secondary action or none | Bottom-left quadrant with an optional corner action badge |
+| Artwork Bottom Right | Configured secondary action or none | Bottom-right quadrant with an optional corner action badge |
 | Setup Large Display | Install, repair, or restore the managed center action | Live transaction, recovery, and failure status |
 
 Every action renders its own fallback when the companion is unreachable
@@ -207,7 +209,9 @@ it falls back to a bundled music icon. Pressing the key toggles play/pause exact
 per press. A circular playback badge overlays the top-right corner using the same visual
 language as Large Now Playing. A thin progress bar follows the bottom edge whenever GSMTC
 provides a valid timeline; disable **Show progress bar** in this key's Property Inspector
-to keep only the artwork and playback badge.
+to keep only the artwork and playback badge. The **Accent color** setting controls the
+play/pause circle and the filled portion of the progress bar; both keep white playback
+glyphs for contrast.
 
 ### Transport keys
 
@@ -256,8 +260,8 @@ Together they display one centered 392x392 color artwork image. The complete sou
 image is preserved: non-square media uses transparent letterboxing or pillarboxing so
 the D200's black key background shows through instead of cropping the artwork. Each key
 receives one exact 196x196 PNG quadrant. The mosaic remains in color while playback is
-paused. These four buttons are display-only: pressing them sends no command and changes
-no playback or local mode state. The polled state contains only an artwork content ID;
+paused. These four buttons are display-only by default and send no command while **On
+press** is set to **None**. The polled state contains only an artwork content ID;
 the plugin fetches one immutable color, grayscale, and four-tile bundle when that ID
 changes, then shares the validated bundle across every artwork key instead of
 retransmitting images on each state poll.
@@ -266,7 +270,9 @@ Each artwork tile has an **On press** setting. It defaults to **None**, preservi
 display-only behavior, or can execute Previous, Play/Pause, Next, Volume Up, Volume Down,
 or Mute Toggle through the same bounded command queue as the dedicated controls. Audio
 actions expose an independent Audio source selector on each tile. The selected secondary
-action never replaces or redraws the artwork quadrant.
+action appears as a configurable circular badge in that tile's outer corner. Badges use
+white state-aware glyphs, including play/pause and mute state, and are hidden when **On
+press** is **None**. Each tile stores its own badge color.
 
 ### Track Progress
 

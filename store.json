@@ -1,9 +1,9 @@
 {
   "cover": "resources/store/cover.png",
   "screenshots": [
-    "resources/store/banner.jpeg"
+    "resources/store/banner.png"
   ],
-  "longDescription": "Media Control for D200 brings local Windows media controls and now-playing displays to Ulanzi D200. Large Now Playing uses the reserved center display for artwork, title, artist, playback state, progress, and time. Setup Large Display provides a guided Install, Repair, and Restore workflow with authenticated one-shot requests, complete verified backups, atomic profile updates, rollback, and an attempted Studio restart whose failure is reported without undoing a validated profile result. The plugin also includes color/grayscale Now Playing artwork, live transport state, selectable per-key control for system volume or active application sessions, circular track progress with per-key colors, and a four-key artwork mosaic. Volume Up, Volume Down, and Mute Toggle remember independent sources; optional Studio titles can label the controlled source. Everything runs locally through Windows GSMTC, Core Audio, and loopback HTTP. No cloud service or account is required. The plugin package includes and supervises its own companion bridge while remaining compatible with newer external installations.",
+  "longDescription": "See what is playing and control Windows audio directly from your Ulanzi D200. Now Playing shows artwork, track details, playback state, and progress, with a configurable accent color for the play/pause badge and filled progress bar. Build a four-key artwork mosaic and optionally add circular action badges in each tile's outer corner, with white state-aware glyphs for transport or audio controls; choose None to keep a tile display-only. Use Large Now Playing on the center display, dedicated transport keys, circular track progress, and per-key controls for system volume or active application audio. Everything runs locally on Windows with no cloud service or account. The plugin includes and supervises its own embedded companion bridge, so no separate companion installation is required.",
   "deviceTypes": [
     "deck"
   ],
