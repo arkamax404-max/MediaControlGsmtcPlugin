@@ -53,8 +53,14 @@ from transport_actions import TransportRouter  # noqa: E402
 TOKEN = "A" * 43
 INSTANCE_ID = "123e4567-e89b-42d3-a456-426614174000"
 NOW = datetime(2026, 8, 23, 12, 0, 15, tzinfo=timezone.utc)
-COLOR_URI = "data:image/png;base64,Y29sb3I="
-GRAYSCALE_URI = "data:image/png;base64,Z3JheQ=="
+TILE_URIS = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPj/HwADAgH/5ncLrgAAAABJRU5ErkJggg==",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==",
+)
+COLOR_URI = TILE_URIS[0]
+GRAYSCALE_URI = TILE_URIS[3]
 
 
 def health(**overrides):
@@ -641,7 +647,7 @@ class PythonProgressTests(unittest.TestCase):
 
     def test_one_poll_and_fetch_drive_nowplaying_and_all_mosaic_tiles(self):
         artwork_id = "6" * 64
-        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI, ("tl", "tr", "bl", "br"))
+        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI, TILE_URIS)
         payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),
                         artwork_id=artwork_id)
 
@@ -768,7 +774,8 @@ class PythonProgressTests(unittest.TestCase):
             "context": "cover", "param": {"showProgress": False},
         }))
         self.assertEqual(api.settings[-1],
-                         ("cover", {"showProgress": False}))
+                         ("cover", {"showProgress": False,
+                                    "accentColor": "#1DB954"}))
         self.assertFalse(model.context("cover").show_progress)
         tile_action = next(iter(MOSAIC_ACTIONS))
         self.assertTrue(scheduler.handle_add({
@@ -780,6 +787,7 @@ class PythonProgressTests(unittest.TestCase):
         }))
         self.assertEqual(api.settings[-1], ("tile", {
             "secondaryAction": "volume-down", "audioTarget": "system",
+            "badgeColor": "#1DB954",
         }))
         self.assertTrue(scheduler.stop(.5))
 
@@ -1114,8 +1122,7 @@ class PythonProgressTests(unittest.TestCase):
     def test_artwork_install_reservation_linearizes_all_invalidations(self):
         artwork_id = "d" * 64
         other_id = "e" * 64
-        bundle = ArtworkBundle(artwork_id, "old-color", "old-gray",
-                               ("1", "2", "3", "4"))
+        bundle = ArtworkBundle(artwork_id, COLOR_URI, GRAYSCALE_URI, TILE_URIS)
         snapshot = MediaSnapshot(
             True, True, True, "Track", "Artist", artwork_id, "ready")
 
@@ -1213,13 +1220,13 @@ class PythonProgressTests(unittest.TestCase):
                     self.assertIsNone(cache.get(artwork_id))
 
                     if invalidation == "two-context" and install_first:
-                        self.assertEqual(api.sends, [("steady", "1")])
+                        self.assertEqual(api.sends, [("steady", TILE_URIS[0])])
                     else:
                         self.assertEqual(api.sends, [])
                     current = model.requests()
                     scheduler._render_now_all(current, scheduler._media_state,
                                               cache.get(artwork_id))
-                    self.assertNotIn(("changing", "old-color"), api.sends)
+                    self.assertNotIn(("changing", COLOR_URI), api.sends)
 
     def test_settings_persist_canonically_without_echo_loop_and_fail_closed(self):
         payload = state(updated_at=NOW.isoformat(), position_updated_at=NOW.isoformat(),

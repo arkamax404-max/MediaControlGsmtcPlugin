@@ -19,6 +19,8 @@ ACTION_UUID = "com.arkamax404.ulanzi.mediacontrol.nowplaying"
 MUTE_TOGGLE_UUID = "com.arkamax404.ulanzi.mediacontrol.mute-toggle"
 DEFAULT_AUDIO_TARGET = "process:spotify.exe"
 DEFAULT_AUDIO_ICON_COLOR = "#1DB954"
+DEFAULT_BADGE_COLOR = "#1DB954"
+DEFAULT_NOW_PLAYING_ACCENT_COLOR = "#1DB954"
 _COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
 _PNG_DATA_URI = re.compile(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}")
 MOSAIC_ACTIONS = {
@@ -122,7 +124,9 @@ class ContextView:
     audio_target: str
     icon_color: str
     show_progress: bool
+    accent_color: str
     secondary_action: str
+    badge_color: str
 
 
 @dataclass
@@ -135,7 +139,9 @@ class _Context:
     audio_target: str = DEFAULT_AUDIO_TARGET
     icon_color: str = DEFAULT_AUDIO_ICON_COLOR
     show_progress: bool = True
+    accent_color: str = DEFAULT_NOW_PLAYING_ACCENT_COLOR
     secondary_action: str = "none"
+    badge_color: str = DEFAULT_BADGE_COLOR
 
 
 def unavailable_media_snapshot(reason: str = "unavailable") -> MediaSnapshot:
@@ -248,12 +254,62 @@ def transport_icon_data_uri(action: str, playing: bool = False,
     return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
 
 
+def render_artwork_tile_svg(artwork: str, tile_action: str, secondary_action: str,
+                            playing: bool = False, muted: bool = False,
+                            badge_color: str = DEFAULT_BADGE_COLOR) -> str:
+    if (not isinstance(artwork, str) or not _PNG_DATA_URI.fullmatch(artwork)
+            or tile_action not in MOSAIC_ACTIONS
+            or normalize_secondary_action(secondary_action) == "none"):
+        return ""
+    secondary_action = normalize_secondary_action(secondary_action)
+    badge_color = normalize_badge_color(badge_color)
+    left = "left" in tile_action
+    top = "top" in tile_action
+    cx, cy = (22 if left else 174), (22 if top else 174)
+    if secondary_action == "toggle":
+        path = ("M29 24h15v52H29zm27 0h15v52H56z" if playing
+                else "m34 24 45 26-45 26z")
+        glyph = f'<path fill="#FFFFFF" d="{path}"/>'
+    elif secondary_action == "previous":
+        glyph = '<path fill="#FFFFFF" d="M25 25h9v50h-9zm11 25 39-25v50z"/>'
+    elif secondary_action == "next":
+        glyph = '<path fill="#FFFFFF" d="m25 25 39 25-39 25zm41 0h9v50h-9z"/>'
+    else:
+        detail = ("M59 38a18 18 0 0 1 0 24M78 40v20M68 50h20"
+                  if secondary_action == "volume-up" else
+                  "M59 38a18 18 0 0 1 0 24M68 50h20"
+                  if secondary_action == "volume-down" else
+                  "M61 37a19 19 0 0 1 0 26M72 27a33 33 0 0 1 0 46"
+                  if muted else "m64 39 22 22m0-22L64 61")
+        glyph = ('<path fill="#FFFFFF" d="M18 42h14l18-15v46L32 58H18z"/>'
+                 f'<path fill="none" stroke="#FFFFFF" stroke-width="7" '
+                 f'stroke-linecap="round" d="{detail}"/>')
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" '
+            'viewBox="0 0 196 196">'
+            f'<image width="196" height="196" href="{artwork}"/>'
+            f'<circle cx="{cx}" cy="{cy}" r="18" fill="{badge_color}"/>'
+            f'<g transform="translate({cx - 15} {cy - 15}) scale(0.3)">{glyph}</g></svg>')
+
+
+def artwork_tile_data_uri(artwork: str, tile_action: str, secondary_action: str,
+                          playing: bool = False, muted: bool = False,
+                          badge_color: str = DEFAULT_BADGE_COLOR) -> str:
+    if normalize_secondary_action(secondary_action) == "none":
+        return artwork if isinstance(artwork, str) and _PNG_DATA_URI.fullmatch(artwork) else ""
+    svg = render_artwork_tile_svg(
+        artwork, tile_action, secondary_action, playing, muted, badge_color)
+    return ("data:image/svg+xml;base64,"
+            + base64.b64encode(svg.encode("utf-8")).decode("ascii")) if svg else ""
+
+
 def render_now_playing_artwork_svg(artwork: str, playing: bool,
                                    progress: ProgressState | None = None,
                                    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                                   show_progress: bool = True) -> str:
+                                   show_progress: bool = True,
+                                   accent_color: str = DEFAULT_NOW_PLAYING_ACCENT_COLOR) -> str:
     if not isinstance(artwork, str) or not _PNG_DATA_URI.fullmatch(artwork):
         return ""
+    accent_color = normalize_now_playing_accent_color(accent_color)
     glyph = ('<path d="M162 19l14 9-14 9z" fill="#FFFFFF"/>' if playing else
              '<path d="M161 19h5v18h-5zm10 0h5v18h-5z" fill="#FFFFFF"/>')
     progress_bar = ""
@@ -265,19 +321,21 @@ def render_now_playing_artwork_svg(artwork: str, playing: bool,
             '<rect x="0" y="189" width="196" height="7" '
             'fill="#121212" opacity="0.72"/>'
             f'<rect x="0" y="189" width="{width:.3f}" height="7" '
-            'fill="#1DB954"/>'
+            f'fill="{accent_color}"/>'
         )
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" '
             'viewBox="0 0 196 196">'
             f'<image width="196" height="196" href="{artwork}"/>'
-            f'<circle cx="168" cy="28" r="18" fill="#1DB954"/>{glyph}{progress_bar}</svg>')
+            f'<circle cx="168" cy="28" r="18" fill="{accent_color}"/>{glyph}{progress_bar}</svg>')
 
 
 def now_playing_artwork_data_uri(artwork: str, playing: bool,
                                  progress: ProgressState | None = None,
                                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                                 show_progress: bool = True) -> str:
-    svg = render_now_playing_artwork_svg(artwork, playing, progress, clock, show_progress)
+                                 show_progress: bool = True,
+                                 accent_color: str = DEFAULT_NOW_PLAYING_ACCENT_COLOR) -> str:
+    svg = render_now_playing_artwork_svg(
+        artwork, playing, progress, clock, show_progress, accent_color)
     return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
 
 
@@ -296,7 +354,8 @@ class NowPlayingActionModel:
             entry = self._contexts.get(context)
             return (ContextView(context, entry.generation, entry.version, entry.active,
                                  entry.action, entry.audio_target, entry.icon_color,
-                                 entry.show_progress, entry.secondary_action)
+                                 entry.show_progress, entry.accent_color,
+                                 entry.secondary_action, entry.badge_color)
                     if entry else None)
 
     def add(self, event: object) -> tuple[RenderRequest, ...]:
@@ -311,9 +370,15 @@ class NowPlayingActionModel:
                       else DEFAULT_AUDIO_ICON_COLOR)
         show_progress = (raw.get("showProgress") is not False
                          if action == ACTION_UUID and isinstance(raw, Mapping) else True)
+        accent_color = (normalize_now_playing_accent_color(raw.get("accentColor"))
+                        if action == ACTION_UUID and isinstance(raw, Mapping)
+                        else DEFAULT_NOW_PLAYING_ACCENT_COLOR)
         secondary_action = (normalize_secondary_action(raw.get("secondaryAction"))
                             if action in MOSAIC_ACTIONS and isinstance(raw, Mapping)
                             else "none")
+        badge_color = (normalize_badge_color(raw.get("badgeColor"))
+                       if action in MOSAIC_ACTIONS and isinstance(raw, Mapping)
+                       else DEFAULT_BADGE_COLOR)
         if action in MOSAIC_ACTIONS and isinstance(raw, Mapping):
             target = normalize_audio_target(raw.get("audioTarget"))
         with self._lock:
@@ -323,7 +388,8 @@ class NowPlayingActionModel:
             entry = _Context(self._next_generation, action,
                              audio_target=target or DEFAULT_AUDIO_TARGET,
                              icon_color=icon_color, show_progress=show_progress,
-                             secondary_action=secondary_action)
+                             accent_color=accent_color,
+                             secondary_action=secondary_action, badge_color=badge_color)
             self._contexts[context] = entry
             return (self._request(context, entry),)
 
@@ -383,10 +449,12 @@ class NowPlayingActionModel:
                 return ()
             if entry.action == ACTION_UUID:
                 entry.show_progress = raw.get("showProgress") is not False
+                entry.accent_color = normalize_now_playing_accent_color(raw.get("accentColor"))
             elif entry.action in MOSAIC_ACTIONS:
                 entry.secondary_action = normalize_secondary_action(raw.get("secondaryAction"))
                 entry.audio_target = normalize_audio_target(
                     raw.get("audioTarget")) or DEFAULT_AUDIO_TARGET
+                entry.badge_color = normalize_badge_color(raw.get("badgeColor"))
             elif entry.action in AUDIO_ACTIONS:
                 entry.audio_target = normalize_audio_target(
                     raw.get("audioTarget")) or DEFAULT_AUDIO_TARGET
@@ -420,7 +488,9 @@ class NowPlayingActionModel:
         with self._lock:
             return tuple(ContextView(context, entry.generation, entry.version, entry.active,
                                      entry.action, entry.audio_target, entry.icon_color,
-                                     entry.show_progress, entry.secondary_action)
+                                     entry.show_progress, entry.accent_color,
+                                     entry.secondary_action,
+                                     entry.badge_color)
                          for context, entry in self._contexts.items()
                          if entry.action in AUDIO_ACTIONS)
 
@@ -444,6 +514,10 @@ class NowPlayingActionModel:
             audio_target = entry.audio_target if entry else DEFAULT_AUDIO_TARGET
             icon_color = entry.icon_color if entry else DEFAULT_AUDIO_ICON_COLOR
             show_progress = entry.show_progress if entry else True
+            accent_color = (entry.accent_color if entry
+                            else DEFAULT_NOW_PLAYING_ACCENT_COLOR)
+            secondary_action = entry.secondary_action if entry else "none"
+            badge_color = entry.badge_color if entry else DEFAULT_BADGE_COLOR
         if action is None:
             return None
         online, available = snapshot.online, snapshot.available
@@ -460,7 +534,11 @@ class NowPlayingActionModel:
         elif mosaic is not None:
             tile, fallback, text = mosaic
             if available and matching:
-                method, image, text = "setBaseDataIcon", bundle.tiles[tile], ""
+                muted = (_snapshot_for_audio_target(snapshot, audio_target).is_muted
+                         if secondary_action == "mute-toggle" else False)
+                method, image, text = "setBaseDataIcon", artwork_tile_data_uri(
+                    bundle.tiles[tile], action, secondary_action, playing, muted,
+                    badge_color), ""
             else:
                 method, image = "setPathIcon", fallback
         elif audio is not None:
@@ -492,7 +570,8 @@ class NowPlayingActionModel:
             artwork = bundle.color if playing else bundle.grayscale
             method = "setBaseDataIcon"
             image = now_playing_artwork_data_uri(
-                artwork, playing, progress, clock, show_progress=show_progress)
+                artwork, playing, progress, clock, show_progress=show_progress,
+                accent_color=accent_color)
         else:
             method, image = "setPathIcon", MUSIC_ICON
         signature = (method, image, text)
@@ -658,6 +737,16 @@ def normalize_secondary_action(value: object) -> str:
 def normalize_audio_icon_color(value: object) -> str:
     return value.upper() if isinstance(value, str) and _COLOR.fullmatch(value) \
         else DEFAULT_AUDIO_ICON_COLOR
+
+
+def normalize_badge_color(value: object) -> str:
+    return value.upper() if isinstance(value, str) and _COLOR.fullmatch(value) \
+        else DEFAULT_BADGE_COLOR
+
+
+def normalize_now_playing_accent_color(value: object) -> str:
+    return value.upper() if isinstance(value, str) and _COLOR.fullmatch(value) \
+        else DEFAULT_NOW_PLAYING_ACCENT_COLOR
 
 
 def _normalize_audio_sources(value: object) -> tuple[AudioSource, ...]:

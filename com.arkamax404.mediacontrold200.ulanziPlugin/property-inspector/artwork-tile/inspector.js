@@ -1,6 +1,9 @@
 import {
   DEFAULT_AUDIO_TARGET, normalizeAudioSources, normalizeAudioTarget,
 } from "../shared/audio-source.js";
+import { DEFAULT_ICON_COLOR, normalizeIconColor } from "../shared/icon-color.js";
+
+export const DEFAULT_BADGE_COLOR = DEFAULT_ICON_COLOR;
 
 export const SECONDARY_ACTIONS = Object.freeze([
   "none", "previous", "toggle", "next", "volume-up", "volume-down", "mute-toggle",
@@ -15,6 +18,7 @@ export function normalizeTileSettings(raw = {}) {
     secondaryAction: SECONDARY_ACTIONS.includes(raw?.secondaryAction)
       ? raw.secondaryAction : "none",
     audioTarget: normalizeAudioTarget(raw?.audioTarget) || DEFAULT_AUDIO_TARGET,
+    badgeColor: normalizeIconColor(raw?.badgeColor),
   };
 }
 
@@ -22,7 +26,9 @@ function startInspector(sdk, documentRef) {
   const actionSelect = documentRef.querySelector("#secondary-action");
   const sourceSelect = documentRef.querySelector("#audio-target");
   const sourceFields = documentRef.querySelector("#audio-source-fields");
-  if (!actionSelect || !sourceSelect || !sourceFields) return;
+  const badgeColor = documentRef.querySelector("#badge-color");
+  const badgeColorHex = documentRef.querySelector("#badge-color-hex");
+  if (!actionSelect || !sourceSelect || !sourceFields || !badgeColor || !badgeColorHex) return;
   const action = TILE_ACTIONS.has(documentRef.documentElement.dataset.action)
     ? documentRef.documentElement.dataset.action : "artwork-top-left";
   let settings = normalizeTileSettings();
@@ -47,13 +53,16 @@ function startInspector(sdk, documentRef) {
   const apply = (raw) => {
     settings = normalizeTileSettings(raw);
     actionSelect.value = settings.secondaryAction;
+    badgeColor.value = settings.badgeColor;
+    badgeColorHex.value = settings.badgeColor;
     sourceFields.hidden = !AUDIO_ACTIONS.has(settings.secondaryAction);
     renderSources();
   };
   const requestSources = () => sdk.sendToPlugin({ type: "requestAudioSources" });
-  const send = () => {
+  const send = (eventTarget) => {
     settings = normalizeTileSettings({
       secondaryAction: actionSelect.value, audioTarget: sourceSelect.value,
+      badgeColor: eventTarget === badgeColorHex ? badgeColorHex.value : badgeColor.value,
     });
     apply(settings);
     sdk.sendParamFromPlugin(settings);
@@ -69,8 +78,13 @@ function startInspector(sdk, documentRef) {
     sources = normalizeAudioSources(event?.payload?.audioSources);
     renderSources();
   });
-  actionSelect.addEventListener("change", send);
-  sourceSelect.addEventListener("change", send);
+  const changed = (event) => {
+    send(event.target);
+  };
+  actionSelect.addEventListener("change", changed);
+  sourceSelect.addEventListener("change", changed);
+  badgeColor.addEventListener("change", changed);
+  badgeColorHex.addEventListener("change", changed);
   apply({});
   sdk.connect(`com.arkamax404.ulanzi.mediacontrol.${action}`);
 }

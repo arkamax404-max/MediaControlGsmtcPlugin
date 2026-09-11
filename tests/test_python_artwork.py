@@ -32,6 +32,8 @@ from now_playing_action import (  # noqa: E402
     ACTION_UUID,
     AUDIO_ACTIONS,
     DEFAULT_AUDIO_ICON_COLOR,
+    DEFAULT_BADGE_COLOR,
+    DEFAULT_NOW_PLAYING_ACCENT_COLOR,
     AudioSource,
     DISPLAY_ACTION_UUIDS,
     MOSAIC_ACTIONS,
@@ -45,16 +47,23 @@ from now_playing_action import (  # noqa: E402
     RenderIntent,
     RenderRequest,
     audio_icon_data_uri,
+    artwork_tile_data_uri,
     normalize_audio_icon_color,
+    normalize_badge_color,
     normalize_media_snapshot,
+    normalize_now_playing_accent_color,
     normalize_secondary_action,
     now_playing_artwork_data_uri,
     now_playing_text,
     transport_icon_data_uri,
+    render_artwork_tile_svg,
+    render_now_playing_artwork_svg,
     unavailable_media_snapshot,
     mute_toggle_data_uri,
 )
 from progress_state import ProgressState  # noqa: E402
+from progress_action import ProgressActionModel  # noqa: E402
+from progress_scheduler import ProgressScheduler  # noqa: E402
 
 
 TOKEN = "A" * 43
@@ -448,6 +457,87 @@ console.log(JSON.stringify(values.map((title) => normalizeBridgeState({ ...base,
         hidden_svg = base64.b64decode(hidden.image.split(",", 1)[1]).decode("utf-8")
         self.assertNotIn('y="189"', hidden_svg)
 
+    def test_now_playing_accent_normalizes_rerenders_and_matches_javascript(self):
+        self.assertEqual(normalize_now_playing_accent_color("#abcdef"), "#ABCDEF")
+        for invalid in (None, "green", "#123", "#12345678", 123456):
+            self.assertEqual(normalize_now_playing_accent_color(invalid),
+                             DEFAULT_NOW_PLAYING_ACCENT_COLOR)
+
+        artwork = uri()
+        progress = ProgressState(True, True, True, True, 45, 180, 1, NOW, "ready", "")
+        model = NowPlayingActionModel()
+        request = model.add({
+            "uuid": ACTION_UUID, "context": "accent",
+            "param": {"showProgress": True, "accentColor": "#abcdef"},
+        })[0]
+        self.assertEqual(model.context("accent").accent_color, "#ABCDEF")
+        bundle = parse_artwork_bundle(payload(values=[artwork] * 6), ARTWORK_ID)
+        snapshot = MediaSnapshot(True, True, True, "Track", "Artist", ARTWORK_ID, "ready")
+        first = model.render(request, snapshot, bundle, progress, lambda: NOW)
+        first_svg = base64.b64decode(first.image.split(",", 1)[1]).decode("utf-8")
+        self.assertEqual(first_svg.count('fill="#ABCDEF"'), 2)
+        self.assertIn('fill="#121212" opacity="0.72"', first_svg)
+
+        changed = model.receive_settings({
+            "context": "accent", "settings": {
+                "showProgress": True, "accentColor": "invalid",
+            },
+        })[0]
+        self.assertGreater(changed.version, request.version)
+        self.assertEqual(model.context("accent").accent_color,
+                         DEFAULT_NOW_PLAYING_ACCENT_COLOR)
+        second = model.render(changed, snapshot, bundle, progress, lambda: NOW)
+        self.assertNotEqual(first.image, second.image)
+
+        script = """
+import { normalizeNowPlayingSettings, renderNowPlayingArtworkSvg } from './src/plugin.js';
+const artwork = JSON.parse(await new Promise(resolve => {
+  let data = ''; process.stdin.on('data', chunk => { data += chunk; });
+  process.stdin.on('end', () => resolve(data));
+}));
+console.log(JSON.stringify({
+  settings: normalizeNowPlayingSettings({ showProgress: true, accentColor: '#abcdef' }),
+  svg: renderNowPlayingArtworkSvg(artwork, true, 0.25, true, '#abcdef'),
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "--eval", script],
+            cwd=ROOT / "com.arkamax404.mediacontrold200.ulanziPlugin",
+            input=json.dumps(artwork), text=True, encoding="utf-8", capture_output=True,
+            check=True,
+        )
+        javascript = json.loads(result.stdout)
+        self.assertEqual(javascript["settings"], {
+            "showProgress": True, "accentColor": "#ABCDEF",
+        })
+        self.assertEqual(javascript["svg"], render_now_playing_artwork_svg(
+            artwork, True, progress, lambda: NOW, True, "#abcdef"))
+
+    def test_scheduler_persists_normalized_now_playing_accent(self):
+        class Api:
+            def __init__(self):
+                self.settings = []
+
+            def setSettings(self, settings, context):
+                self.settings.append((context, settings))
+                return True
+
+        api = Api()
+        scheduler = ProgressScheduler(
+            api, object(), ProgressActionModel(), now_playing_model=NowPlayingActionModel())
+        self.assertTrue(scheduler.handle_add({
+            "uuid": ACTION_UUID, "context": "cover", "param": {"showProgress": False},
+        }))
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "cover", "param": {
+                "showProgress": False, "accentColor": "#abcdef",
+            },
+        }))
+        self.assertEqual(api.settings[-1], ("cover", {
+            "showProgress": False, "accentColor": "#ABCDEF",
+        }))
+        self.assertTrue(scheduler.stop(0))
+
     def test_mosaic_exact_mapping_bytes_fallbacks_and_pause_dedup(self):
         values = [uri(png(idat=bytes((index,)))) for index in range(1, 7)]
         bundle = parse_artwork_bundle(payload(values=values), ARTWORK_ID)
@@ -481,6 +571,109 @@ console.log(JSON.stringify(values.map((title) => normalizeBridgeState({ ...base,
                        for request in fallback_requests]
             self.assertEqual([(item.image, item.text) for item in offline],
                              [("./assets/offline.svg", text)] * 4)
+
+    def test_mosaic_badges_cover_corners_actions_state_and_color(self):
+        tile = uri()
+        corners = {
+            "artwork-top-left": (22, 22),
+            "artwork-top-right": (174, 22),
+            "artwork-bottom-left": (22, 174),
+            "artwork-bottom-right": (174, 174),
+        }
+        for suffix, (cx, cy) in corners.items():
+            action = f"com.arkamax404.ulanzi.mediacontrol.{suffix}"
+            svg = render_artwork_tile_svg(tile, action, "next", badge_color="#abcdef")
+            self.assertIn(f'<circle cx="{cx}" cy="{cy}" r="18" fill="#ABCDEF"/>', svg)
+            self.assertIn('fill="#FFFFFF"', svg)
+            ElementTree.fromstring(svg)
+
+        glyphs = {
+            "previous": "M25 25h9v50h-9zm11 25 39-25v50z",
+            "next": "m25 25 39 25-39 25zm41 0h9v50h-9z",
+            "volume-up": "M78 40v20M68 50h20",
+            "volume-down": "M68 50h20",
+            "mute-toggle": "m64 39 22 22m0-22L64 61",
+        }
+        tile_action = next(iter(MOSAIC_ACTIONS))
+        for secondary_action, marker in glyphs.items():
+            with self.subTest(action=secondary_action):
+                self.assertIn(marker, render_artwork_tile_svg(
+                    tile, tile_action, secondary_action))
+        self.assertIn("M29 24h15v52H29zm27 0h15v52H56z",
+                      render_artwork_tile_svg(tile, tile_action, "toggle", playing=True))
+        self.assertIn("m34 24 45 26-45 26z",
+                      render_artwork_tile_svg(tile, tile_action, "toggle", playing=False))
+        self.assertIn("M61 37a19 19 0 0 1 0 26M72 27a33 33 0 0 1 0 46",
+                      render_artwork_tile_svg(tile, tile_action, "mute-toggle", muted=True))
+        self.assertEqual(artwork_tile_data_uri(tile, tile_action, "none"), tile)
+        self.assertEqual(render_artwork_tile_svg(tile, tile_action, "none"), "")
+
+    def test_mosaic_badge_settings_normalize_update_and_rerender(self):
+        self.assertEqual(normalize_badge_color("#abcdef"), "#ABCDEF")
+        for invalid in (None, "green", "#123", "#12345678", 123456):
+            self.assertEqual(normalize_badge_color(invalid), DEFAULT_BADGE_COLOR)
+        action = next(iter(MOSAIC_ACTIONS))
+        model = NowPlayingActionModel()
+        request = model.add({
+            "uuid": action, "context": "tile",
+            "param": {"secondaryAction": "toggle", "badgeColor": "#abcdef"},
+        })[0]
+        self.assertEqual(model.context("tile").badge_color, "#ABCDEF")
+        bundle = parse_artwork_bundle(payload(), ARTWORK_ID)
+        playing = MediaSnapshot(True, True, True, "", "", ARTWORK_ID, "ready")
+        first = model.render(request, playing, bundle)
+        first_svg = base64.b64decode(first.image.split(",", 1)[1]).decode("utf-8")
+        self.assertIn('fill="#ABCDEF"', first_svg)
+        changed = model.receive_settings({
+            "context": "tile", "settings": {
+                "secondaryAction": "previous", "audioTarget": "system",
+                "badgeColor": "invalid",
+            },
+        })[0]
+        self.assertEqual(model.context("tile").badge_color, DEFAULT_BADGE_COLOR)
+        second = model.render(changed, playing, bundle)
+        self.assertNotEqual(first.image, second.image)
+        second_svg = base64.b64decode(second.image.split(",", 1)[1]).decode("utf-8")
+        self.assertIn(f'fill="{DEFAULT_BADGE_COLOR}"', second_svg)
+
+    def test_scheduler_persists_normalized_mosaic_badge_color(self):
+        class Api:
+            def __init__(self):
+                self.settings = []
+
+            def setSettings(self, settings, context):
+                self.settings.append((context, settings))
+                return True
+
+        api = Api()
+        now_playing_model = NowPlayingActionModel()
+        scheduler = ProgressScheduler(
+            api, object(), ProgressActionModel(), now_playing_model=now_playing_model)
+        action = next(iter(MOSAIC_ACTIONS))
+        self.assertTrue(scheduler.handle_add({"uuid": action, "context": "tile"}))
+
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "tile", "param": {
+                "secondaryAction": "next", "audioTarget": "system",
+                "badgeColor": "#abcdef",
+            },
+        }))
+        self.assertEqual(api.settings[-1], ("tile", {
+            "secondaryAction": "next", "audioTarget": "system",
+            "badgeColor": "#ABCDEF",
+        }))
+
+        self.assertTrue(scheduler.handle_property_settings({
+            "context": "tile", "param": {
+                "secondaryAction": "previous", "audioTarget": "invalid",
+                "badgeColor": "invalid",
+            },
+        }))
+        self.assertEqual(api.settings[-1], ("tile", {
+            "secondaryAction": "previous", "audioTarget": "process:spotify.exe",
+            "badgeColor": DEFAULT_BADGE_COLOR,
+        }))
+        self.assertTrue(scheduler.stop(0))
 
     def test_mosaic_lifecycle_copies_and_unknown_identity_are_independent(self):
         model = NowPlayingActionModel()

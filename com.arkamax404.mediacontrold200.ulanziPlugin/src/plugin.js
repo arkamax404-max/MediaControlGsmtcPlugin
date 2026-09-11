@@ -17,7 +17,11 @@ export const DEFAULT_PROGRESS_SETTINGS = Object.freeze({
 });
 export const DEFAULT_AUDIO_TARGET = "process:spotify.exe";
 export const DEFAULT_AUDIO_ICON_COLOR = "#1DB954";
-export const DEFAULT_NOW_PLAYING_SETTINGS = Object.freeze({ showProgress: true });
+export const DEFAULT_BADGE_COLOR = "#1DB954";
+export const DEFAULT_NOW_PLAYING_SETTINGS = Object.freeze({
+  showProgress: true,
+  accentColor: "#1DB954",
+});
 
 const ACTIONS = Object.freeze({
   nowplaying: { command: "toggle", icon: "./assets/music.svg" },
@@ -134,8 +138,17 @@ export function normalizeAudioIconColor(value) {
     ? String(value).toUpperCase() : DEFAULT_AUDIO_ICON_COLOR;
 }
 
+export function normalizeBadgeColor(value) {
+  return COLOR_PATTERN.test(String(value || ""))
+    ? String(value).toUpperCase() : DEFAULT_BADGE_COLOR;
+}
+
 export function normalizeNowPlayingSettings(raw = {}) {
-  return { showProgress: typeof raw?.showProgress === "boolean" ? raw.showProgress : true };
+  return {
+    showProgress: typeof raw?.showProgress === "boolean" ? raw.showProgress : true,
+    accentColor: typeof raw?.accentColor === "string" && COLOR_PATTERN.test(raw.accentColor)
+      ? raw.accentColor.toUpperCase() : DEFAULT_NOW_PLAYING_SETTINGS.accentColor,
+  };
 }
 
 export function renderAudioIconSvg(action, color = DEFAULT_AUDIO_ICON_COLOR) {
@@ -176,21 +189,60 @@ export function renderTransportIconSvg(action, playing = false,
     + `<path fill="${safeColor}" d="${path}"/></svg>`;
 }
 
+export function renderArtworkTileSvg(artwork, tileAction, secondaryAction,
+  playing = false, muted = false, badgeColor = DEFAULT_BADGE_COLOR) {
+  const safeArtwork = artworkDataUri(artwork);
+  const action = normalizeSecondaryAction(secondaryAction);
+  if (!safeArtwork || !Number.isInteger(ACTIONS[tileAction]?.tile) || action === "none") return "";
+  const cx = tileAction.includes("left") ? 22 : 174;
+  const cy = tileAction.includes("top") ? 22 : 174;
+  let glyph;
+  if (action === "toggle") {
+    const path = playing ? "M29 24h15v52H29zm27 0h15v52H56z" : "m34 24 45 26-45 26z";
+    glyph = `<path fill="#FFFFFF" d="${path}"/>`;
+  } else if (action === "previous") {
+    glyph = `<path fill="#FFFFFF" d="M25 25h9v50h-9zm11 25 39-25v50z"/>`;
+  } else if (action === "next") {
+    glyph = `<path fill="#FFFFFF" d="m25 25 39 25-39 25zm41 0h9v50h-9z"/>`;
+  } else {
+    const detail = action === "volume-up" ? "M59 38a18 18 0 0 1 0 24M78 40v20M68 50h20"
+      : action === "volume-down" ? "M59 38a18 18 0 0 1 0 24M68 50h20"
+        : muted ? "M61 37a19 19 0 0 1 0 26M72 27a33 33 0 0 1 0 46"
+          : "m64 39 22 22m0-22L64 61";
+    glyph = `<path fill="#FFFFFF" d="M18 42h14l18-15v46L32 58H18z"/>`
+      + `<path fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" d="${detail}"/>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">`
+    + `<image width="196" height="196" href="${safeArtwork}"/>`
+    + `<circle cx="${cx}" cy="${cy}" r="18" fill="${normalizeBadgeColor(badgeColor)}"/>`
+    + `<g transform="translate(${cx - 15} ${cy - 15}) scale(0.3)">${glyph}</g></svg>`;
+}
+
+export function artworkTileDataUri(artwork, tileAction, secondaryAction,
+  playing = false, muted = false, badgeColor = DEFAULT_BADGE_COLOR) {
+  if (normalizeSecondaryAction(secondaryAction) === "none") return artworkDataUri(artwork) || "";
+  const svg = renderArtworkTileSvg(
+    artwork, tileAction, secondaryAction, playing, muted, badgeColor,
+  );
+  return svg ? svgDataUri(svg) : "";
+}
+
 export function renderNowPlayingArtworkSvg(artwork, playing, progress = null,
-  showProgress = true) {
+  showProgress = true, accentColor = DEFAULT_NOW_PLAYING_SETTINGS.accentColor) {
   const safeArtwork = artworkDataUri(artwork);
   if (!safeArtwork) return "";
+  const safeAccentColor = normalizeNowPlayingSettings({ accentColor }).accentColor;
   const glyph = playing
     ? `<path d="M162 19l14 9-14 9z" fill="#FFFFFF"/>`
     : `<path d="M161 19h5v18h-5zm10 0h5v18h-5z" fill="#FFFFFF"/>`;
   const ratio = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : null;
   const progressBar = showProgress && ratio !== null
     ? `<rect x="0" y="189" width="196" height="7" fill="#121212" opacity="0.72"/>`
-      + `<rect x="0" y="189" width="${(196 * ratio).toFixed(3)}" height="7" fill="#1DB954"/>`
+      + `<rect x="0" y="189" width="${(196 * ratio).toFixed(3)}" height="7" fill="${safeAccentColor}"/>`
     : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="196" height="196" viewBox="0 0 196 196">`
     + `<image width="196" height="196" href="${safeArtwork}"/>`
-    + `<circle cx="168" cy="28" r="18" fill="#1DB954"/>${glyph}${progressBar}</svg>`;
+    + `<circle cx="168" cy="28" r="18" fill="${safeAccentColor}"/>${glyph}${progressBar}</svg>`;
 }
 
 function normalizeAudioSources(raw) {
@@ -608,6 +660,7 @@ export class SpotifyGSMTCPlugin {
       iconColor,
       secondaryAction: mosaicAction
         ? normalizeSecondaryAction(event.param?.secondaryAction) : "none",
+      badgeColor: mosaicAction ? normalizeBadgeColor(event.param?.badgeColor) : null,
       ...(action === "progress" ? { mode: "remaining" } : {}),
     });
     if ((action === "progress" && !settingsMatch(event.param, settings))
@@ -647,9 +700,13 @@ export class SpotifyGSMTCPlugin {
     if (Number.isInteger(ACTIONS[entry.action]?.tile)) {
       entry.secondaryAction = normalizeSecondaryAction(raw.secondaryAction);
       entry.audioTarget = normalizeAudioTarget(raw.audioTarget) || DEFAULT_AUDIO_TARGET;
+      entry.badgeColor = normalizeBadgeColor(raw.badgeColor);
       if (persist) this.sdk.setSettings?.({
         secondaryAction: entry.secondaryAction, audioTarget: entry.audioTarget,
+        badgeColor: entry.badgeColor,
       }, event.context);
+      this.rendered.delete(event.context);
+      this.render(event.context, entry.action, this.lastState, true);
       return;
     }
     if (entry.action === "nowplaying") {
@@ -969,10 +1026,22 @@ export class SpotifyGSMTCPlugin {
     if (Number.isInteger(mosaic?.tile)) {
       const bundle = this.artworkBundle?.id === state.artworkId ? this.artworkBundle : null;
       const tile = state.online && state.available ? bundle?.tiles[mosaic.tile] : null;
-      const signature = tile || `${state.online}:${state.available}:${mosaic.icon}`;
+      let image = tile;
+      if (tile) {
+        const target = entry?.audioTarget || DEFAULT_AUDIO_TARGET;
+        const sources = Array.isArray(state.audioSources) ? state.audioSources : [];
+        const source = sources.find((item) => item.target === target);
+        const muted = entry?.secondaryAction === "mute-toggle"
+          ? (source?.isMuted ?? (sources.length === 0 && target === DEFAULT_AUDIO_TARGET
+            ? state.isMuted === true : false))
+          : false;
+        image = artworkTileDataUri(tile, action, entry?.secondaryAction,
+          state.isPlaying === true, muted, entry?.badgeColor);
+      }
+      const signature = image || `${state.online}:${state.available}:${mosaic.icon}`;
       if (this.rendered.get(context) === signature) return;
       this.rendered.set(context, signature);
-      if (tile) this.sdk.setBaseDataIcon(context, tile, "");
+      if (image) this.sdk.setBaseDataIcon(context, image, "");
       else if (state.online === false) this.sdk.setPathIcon(
         context, "./assets/offline.svg", this.offlineLabel(state),
       );
@@ -1037,6 +1106,7 @@ export class SpotifyGSMTCPlugin {
         ? extrapolatePosition(state, this.now()) / state.durationSeconds : null;
       if (artwork) this.sdk.setBaseDataIcon(context, svgDataUri(renderNowPlayingArtworkSvg(
         artwork, state.isPlaying, progress, entry?.settings?.showProgress !== false,
+        entry?.settings?.accentColor,
       )), text);
       else this.sdk.setPathIcon(context, "./assets/music.svg", text);
       return;

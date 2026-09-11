@@ -7,7 +7,8 @@
     :root { color-scheme: dark; font-family: Arial, sans-serif; }
     body { margin: 0; padding: 14px; background: #1e1f22; color: #f5f5f5; }
     form { display: grid; gap: 10px; } label { font-size: 13px; font-weight: 700; }
-    select { box-sizing: border-box; width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid #555; border-radius: 4px; background: #2b2d31; color: #fff; }
+    select, input { box-sizing: border-box; width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid #555; border-radius: 4px; background: #2b2d31; color: #fff; }
+    .color-row { display: grid; grid-template-columns: 44px 1fr; gap: 8px; } input[type="color"] { padding: 2px; }
     .fields { display: grid; gap: 10px; } .hint { margin: 0; color: #b5bac1; font-size: 12px; line-height: 1.4; }
   </style>
 </head>
@@ -16,6 +17,7 @@
     <label for="secondary-action">On press</label>
     <select id="secondary-action" name="secondaryAction"><option value="none">None</option><option value="previous">Previous</option><option value="toggle">Play/Pause</option><option value="next">Next</option><option value="volume-up">Volume Up</option><option value="volume-down">Volume Down</option><option value="mute-toggle">Mute Toggle</option></select>
     <div id="audio-source-fields" class="fields" hidden><label for="audio-target">Audio source</label><select id="audio-target" name="audioTarget"></select><p class="hint">Shows currently active Windows audio sources.</p></div>
+    <label for="badge-color">Badge color</label><div class="color-row"><input id="badge-color" name="badgeColor" type="color" value="#1DB954" aria-label="Badge color picker"><input id="badge-color-hex" name="badgeColorHex" type="text" value="#1DB954" maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="Badge color hexadecimal value"></div><p class="hint">Applied independently to this tile. Default: #1DB954.</p>
     <p class="hint">The tile keeps displaying its artwork quadrant.</p>
   </form>
   <script src="../../vendor/ulanzi-sdk/html/js/constants.js"></script><script src="../../vendor/ulanzi-sdk/html/js/eventEmitter.js"></script><script src="../../vendor/ulanzi-sdk/html/js/timers.js"></script><script src="../../vendor/ulanzi-sdk/html/js/utils.js"></script><script src="../../vendor/ulanzi-sdk/html/js/ulanziApi.js"></script><script type="module" src="inspector.js"></script>

@@ -9,7 +9,10 @@
     body { margin: 0; padding: 14px; background: #1e1f22; color: #f5f5f5; }
     form { display: grid; gap: 10px; }
     label { display: grid; grid-template-columns: 132px 1fr; gap: 8px; align-items: center; font-size: 13px; font-weight: 700; }
+    input { box-sizing: border-box; min-height: 34px; padding: 4px 8px; border: 1px solid #555; border-radius: 4px; background: #2b2d31; color: #fff; }
     input[type="checkbox"] { justify-self: start; }
+    input[type="color"] { width: 44px; padding: 2px; }
+    .color-row { display: grid; grid-template-columns: 44px 1fr; gap: 8px; }
     .hint { margin: 0; color: #b5bac1; font-size: 12px; line-height: 1.4; }
   </style>
 </head>
@@ -17,6 +20,9 @@
   <form id="nowplaying-settings" autocomplete="off">
     <label>Show progress bar <input type="checkbox" name="showProgress" checked></label>
     <p class="hint">The playback indicator remains visible over the top-right corner of the artwork.</p>
+    <label for="accent-color">Accent color</label>
+    <div class="color-row"><input id="accent-color" name="accentColor" type="color" value="#1DB954" aria-label="Accent color picker"><input name="accentColorHex" type="text" value="#1DB954" maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="Accent color hexadecimal value"></div>
+    <p class="hint">Applied to the playback indicator and filled progress bar. Default: #1DB954.</p>
   </form>
   <script src="../../vendor/ulanzi-sdk/html/js/constants.js"></script>
   <script src="../../vendor/ulanzi-sdk/html/js/eventEmitter.js"></script>

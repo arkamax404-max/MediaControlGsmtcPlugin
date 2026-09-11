@@ -198,9 +198,13 @@ class ProgressScheduler:
                         settings = {
                             "secondaryAction": current.secondary_action,
                             "audioTarget": current.audio_target,
+                            "badgeColor": current.badge_color,
                         }
                     elif current.action not in TRANSPORT_DISPLAY:
-                        settings = {"showProgress": current.show_progress}
+                        settings = {
+                            "showProgress": current.show_progress,
+                            "accentColor": current.accent_color,
+                        }
                     self.api.setSettings(settings, context)
                 except Exception:
                     pass

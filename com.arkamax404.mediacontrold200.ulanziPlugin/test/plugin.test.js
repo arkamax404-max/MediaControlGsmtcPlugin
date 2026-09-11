@@ -7,12 +7,14 @@ import {
   ANIMATION_INTERVAL_MS,
   BRIDGE_ORIGIN,
   DEFAULT_AUDIO_ICON_COLOR,
+  DEFAULT_BADGE_COLOR,
   DEFAULT_NOW_PLAYING_SETTINGS,
   DEFAULT_PROGRESS_SETTINGS,
   DEFAULT_LARGEITEM_SETTINGS,
   SpotifyGSMTCPlugin,
   actionFromEvent,
   artworkDataUri,
+  artworkTileDataUri,
   centeredTextPlacement,
   escapeXml,
   extrapolatePosition,
@@ -22,6 +24,7 @@ import {
   nextProgressMode,
   normalizeArtworkBundle,
   normalizeAudioIconColor,
+  normalizeBadgeColor,
   normalizeNowPlayingSettings,
   normalizeSecondaryAction,
   normalizeBridgeState,
@@ -31,6 +34,7 @@ import {
   renderProgressSvg,
   renderLargeItemSvg,
   renderAudioIconSvg,
+  renderArtworkTileSvg,
   renderMuteToggleSvg,
   renderNowPlayingArtworkSvg,
   renderTransportIconSvg,
@@ -49,6 +53,7 @@ import {
   normalizeNowPlayingSettings as normalizeNowPlayingInspectorSettings,
 } from "../property-inspector/nowplaying/inspector.js";
 import {
+  DEFAULT_BADGE_COLOR as INSPECTOR_DEFAULT_BADGE_COLOR,
   normalizeTileSettings,
 } from "../property-inspector/artwork-tile/inspector.js";
 import {
@@ -734,7 +739,8 @@ test("composes artwork with playback badge and optional progress", () => {
   const now = Date.parse("2026-08-23T12:00:15.000Z");
   const plugin = createPlugin({ sdk, now: () => now });
   plugin.contexts.set("cover", {
-    action: "nowplaying", active: true, settings: { showProgress: true },
+    action: "nowplaying", active: true,
+    settings: { showProgress: true, accentColor: "#ABCDEF" },
   });
   plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
   const thumbnail = PNG_ARTWORK;
@@ -751,23 +757,54 @@ test("composes artwork with playback badge and optional progress", () => {
 
   assert.equal(plugin.artworkBundle.color, thumbnail, "the validated bundle remains untouched");
   assert.deepEqual(sdk.calls[0], ["base64", "cover", svgDataUri(
-    renderNowPlayingArtworkSvg(thumbnail, true, 0.25),
+    renderNowPlayingArtworkSvg(thumbnail, true, 0.25, true, "#ABCDEF"),
   ), "Track\nArtist"]);
   assert.deepEqual(sdk.calls[1], ["base64", "cover", svgDataUri(
-    renderNowPlayingArtworkSvg(GRAYSCALE_ARTWORK, false, 0.25),
+    renderNowPlayingArtworkSvg(GRAYSCALE_ARTWORK, false, 0.25, true, "#ABCDEF"),
   ), "Track\nArtist"]);
   assert.deepEqual(sdk.calls[2], sdk.calls[0]);
   const svg = Buffer.from(sdk.calls[0][2].split(",", 2)[1], "base64").toString("utf8");
-  assert.match(svg, /<circle cx="168" cy="28" r="18" fill="#1DB954"\/>/);
+  assert.match(svg, /<circle cx="168" cy="28" r="18" fill="#ABCDEF"\/>/);
+  assert.equal((svg.match(/fill="#ABCDEF"/g) || []).length, 2);
+  assert.match(svg, /fill="#121212" opacity="0\.72"/);
   assert.match(svg, /width="49\.000" height="7"/);
 
   assert.deepEqual(normalizeNowPlayingSettings({}), DEFAULT_NOW_PLAYING_SETTINGS);
   assert.deepEqual(normalizeNowPlayingInspectorSettings({}), NOW_PLAYING_DEFAULTS);
+  assert.deepEqual(normalizeNowPlayingSettings({ showProgress: false }), {
+    showProgress: false, accentColor: "#1DB954",
+  });
+  assert.deepEqual(normalizeNowPlayingSettings({ accentColor: "#abcdef" }), {
+    showProgress: true, accentColor: "#ABCDEF",
+  });
+  assert.deepEqual(normalizeNowPlayingInspectorSettings({ accentColor: "#abcdef" }), {
+    showProgress: true, accentColor: "#ABCDEF",
+  });
+  for (const invalid of [null, "green", "#123", "#12345678", 123456]) {
+    assert.equal(normalizeNowPlayingSettings({ accentColor: invalid }).accentColor, "#1DB954");
+    assert.equal(normalizeNowPlayingInspectorSettings({ accentColor: invalid }).accentColor,
+      "#1DB954");
+  }
+  const inspectorHtml = readFileSync(new URL(
+    "../property-inspector/nowplaying/inspector.html", import.meta.url,
+  ), "utf8");
+  assert.equal((inspectorHtml.match(/<input[^>]*type="color"/g) || []).length, 1);
+  assert.match(inspectorHtml, /name="accentColor"[^>]*value="#1DB954"/);
+  assert.match(inspectorHtml, /name="accentColorHex"[^>]*pattern="#\[0-9A-Fa-f\]\{6\}"/);
   assert.equal(renderNowPlayingArtworkSvg(thumbnail, true, 0.25, false).includes('y="189"'), false);
-  plugin.receiveSettings({ context: "cover", param: { showProgress: false } }, true);
+  plugin.lastState = current;
+  const rendersBeforeSettings = sdk.calls.filter(([kind]) => kind === "base64").length;
+  plugin.receiveSettings({
+    context: "cover", param: { showProgress: false, accentColor: "#123abc" },
+  }, true);
   assert.deepEqual(sdk.calls.find(([kind]) => kind === "settings"), [
-    "settings", { showProgress: false }, "cover",
+    "settings", { showProgress: false, accentColor: "#123ABC" }, "cover",
   ]);
+  assert.equal(sdk.calls.filter(([kind]) => kind === "base64").length,
+    rendersBeforeSettings + 1);
+  const rerenderedSvg = Buffer.from(sdk.calls.at(-1)[2].split(",", 2)[1], "base64").toString("utf8");
+  assert.match(rerenderedSvg, /fill="#123ABC"/);
+  assert.equal(rerenderedSvg.includes('y="189"'), false);
   plugin.stop();
 });
 
@@ -1071,12 +1108,83 @@ test("routes nowplaying and toggle through shared toggle flow and rerenders poll
   plugin.stop();
 });
 
+test("composes artwork badges in each outer corner with action and state glyphs", () => {
+  const corners = [[22, 22], [174, 22], [22, 174], [174, 174]];
+  MOSAIC_ACTIONS.forEach((tileAction, index) => {
+    const svg = renderArtworkTileSvg(
+      MOSAIC_TILES[index], tileAction, "next", false, false, "#abcdef",
+    );
+    const [cx, cy] = corners[index];
+    assert.match(svg, new RegExp(`<circle cx="${cx}" cy="${cy}" r="18" fill="#ABCDEF"/>`));
+    assert.match(svg, /fill="#FFFFFF"/);
+  });
+  const markers = new Map([
+    ["previous", "M25 25h9v50h-9zm11 25 39-25v50z"],
+    ["next", "m25 25 39 25-39 25zm41 0h9v50h-9z"],
+    ["volume-up", "M78 40v20M68 50h20"],
+    ["volume-down", "M68 50h20"],
+    ["mute-toggle", "m64 39 22 22m0-22L64 61"],
+  ]);
+  for (const [secondaryAction, marker] of markers) {
+    assert.ok(renderArtworkTileSvg(
+      MOSAIC_TILES[0], MOSAIC_ACTIONS[0], secondaryAction,
+    ).includes(marker), secondaryAction);
+  }
+  assert.match(renderArtworkTileSvg(MOSAIC_TILES[0], MOSAIC_ACTIONS[0], "toggle", true),
+    /M29 24h15v52H29zm27 0h15v52H56z/);
+  assert.match(renderArtworkTileSvg(MOSAIC_TILES[0], MOSAIC_ACTIONS[0], "toggle", false),
+    /m34 24 45 26-45 26z/);
+  assert.match(renderArtworkTileSvg(
+    MOSAIC_TILES[0], MOSAIC_ACTIONS[0], "mute-toggle", false, true,
+  ), /M61 37a19 19 0 0 1 0 26M72 27a33 33 0 0 1 0 46/);
+  assert.equal(artworkTileDataUri(MOSAIC_TILES[0], MOSAIC_ACTIONS[0], "none"), MOSAIC_TILES[0]);
+  assert.equal(renderArtworkTileSvg(MOSAIC_TILES[0], MOSAIC_ACTIONS[0], "none"), "");
+
+  const sdk = createSdk();
+  const plugin = createPlugin({ sdk });
+  plugin.artworkBundle = normalizeArtworkBundle(artworkBundle(), ARTWORK_ID_A);
+  plugin.contexts.set("missing-source", {
+    action: MOSAIC_ACTIONS[0], active: true, secondaryAction: "mute-toggle",
+    audioTarget: DEFAULT_AUDIO_TARGET, badgeColor: DEFAULT_BADGE_COLOR,
+  });
+  plugin.render("missing-source", MOSAIC_ACTIONS[0], {
+    online: true, available: true, artworkId: ARTWORK_ID_A, isMuted: true,
+    audioSources: [{ target: "system", isMuted: true }],
+  });
+  const missingSourceSvg = Buffer.from(
+    sdk.calls.at(-1)[2].split(",")[1], "base64",
+  ).toString("utf8");
+  assert.match(missingSourceSvg, /m64 39 22 22m0-22L64 61/);
+  assert.ok(!missingSourceSvg.includes("M61 37a19"));
+});
+
+test("normalizes badge settings and exposes color controls on all tile inspectors", () => {
+  assert.equal(DEFAULT_BADGE_COLOR, "#1DB954");
+  assert.equal(INSPECTOR_DEFAULT_BADGE_COLOR, DEFAULT_BADGE_COLOR);
+  assert.equal(normalizeBadgeColor("#abcdef"), "#ABCDEF");
+  for (const invalid of [null, "green", "#123", "#12345678", 123456]) {
+    assert.equal(normalizeBadgeColor(invalid), DEFAULT_BADGE_COLOR);
+  }
+  assert.deepEqual(normalizeTileSettings({ badgeColor: "#abcdef" }), {
+    secondaryAction: "none", audioTarget: DEFAULT_AUDIO_TARGET, badgeColor: "#ABCDEF",
+  });
+  for (const action of MOSAIC_ACTIONS) {
+    const html = readFileSync(new URL(
+      `../property-inspector/artwork-tile/${action.slice(8)}.html`, import.meta.url,
+    ), "utf8");
+    assert.match(html, /id="badge-color"[^>]*type="color"[^>]*value="#1DB954"/);
+    assert.ok(html.includes('id="badge-color-hex"'));
+    assert.ok(html.includes('pattern="#[0-9A-Fa-f]{6}"'));
+  }
+});
+
 test("artwork tiles execute configured plugin actions without changing their image", async () => {
   assert.equal(normalizeSecondaryAction("toggle"), "toggle");
   assert.equal(normalizeSecondaryAction("open-url"), "none");
   assert.deepEqual(normalizeTileSettings({
     secondaryAction: "mute-toggle", audioTarget: "system",
-  }), { secondaryAction: "mute-toggle", audioTarget: "system" });
+    badgeColor: "#abcdef",
+  }), { secondaryAction: "mute-toggle", audioTarget: "system", badgeColor: "#ABCDEF" });
   const sdk = createSdk();
   const requests = [];
   const plugin = createPlugin({
@@ -1089,7 +1197,7 @@ test("artwork tiles execute configured plugin actions without changing their ima
   });
   plugin.contexts.set("tile", {
     action: "artwork-top-left", active: true,
-    secondaryAction: "mute-toggle", audioTarget: "system",
+    secondaryAction: "mute-toggle", audioTarget: "system", badgeColor: "#ABCDEF",
   });
   plugin.lastState = normalizeBridgeState(
     state({ artwork_id: ARTWORK_ID_A }), Date.parse("2026-08-23T12:00:01.000Z"),
@@ -1103,10 +1211,14 @@ test("artwork tiles execute configured plugin actions without changing their ima
   assert.deepEqual(sdk.calls.filter(([kind]) => ["path", "base64"].includes(kind)), before,
     "secondary actions do not replace tile artwork");
   plugin.receiveSettings({
-    context: "tile", param: { secondaryAction: "next", audioTarget: "bad" },
+    context: "tile", param: {
+      secondaryAction: "next", audioTarget: "bad", badgeColor: "#123456",
+    },
   }, true);
-  assert.deepEqual(sdk.calls.at(-1), [
-    "settings", { secondaryAction: "next", audioTarget: DEFAULT_AUDIO_TARGET }, "tile",
+  assert.deepEqual(sdk.calls.findLast(([kind]) => kind === "settings"), [
+    "settings", {
+      secondaryAction: "next", audioTarget: DEFAULT_AUDIO_TARGET, badgeColor: "#123456",
+    }, "tile",
   ]);
   plugin.stop();
 });
@@ -1430,7 +1542,7 @@ test("manifest declares approved identity, functional entrypoint, and unique act
   assert.equal(manifest.Category, "Media Control for D200");
   assert.equal(manifest.UUID, "com.arkamax404.ulanzi.mediacontrol");
   assert.equal(manifest.CodePath, "src/app.js");
-  assert.equal(manifest.Version, "1.7.0");
+  assert.equal(manifest.Version, "1.7.1");
   const inspectors = Object.fromEntries(manifest.Actions.map((action) => [
     action.UUID.split(".").at(-1), action.PropertyInspectorPath,
   ]));
