@@ -657,6 +657,86 @@ class ProfileAssistantTests(unittest.TestCase):
             self.assertEqual(status["state"], "manual_recovery_required")
             self.assertEqual(status["failure"], "Concurrent bytes were preserved")
 
+    def test_studio_executable_is_resolved_from_first_usable_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            current = root / "Ulanzi Studio" / "UlanziDeck.exe"
+            legacy = root / "UlanziDeck" / "UlanziDeck.exe"
+            for path in (current, legacy):
+                path.parent.mkdir()
+                path.write_bytes(b"test executable")
+            wrong_name = current.with_name("Other.exe")
+            wrong_name.write_bytes(b"other")
+
+            def broken():
+                raise OSError("source unavailable")
+
+            resolved = profile_assistant.resolve_studio_executable(legacy, (
+                broken,
+                lambda: [root / "Missing" / "UlanziDeck.exe", wrong_name,
+                         Path("UlanziDeck.exe"), current.parent],
+                lambda: [current],
+                lambda: [legacy],
+            ))
+            self.assertEqual(resolved, current)
+
+    def test_studio_executable_falls_back_to_legacy_path_when_unresolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fallback = Path(directory).resolve() / "UlanziDeck" / "UlanziDeck.exe"
+            resolved = profile_assistant.resolve_studio_executable(
+                fallback, (lambda: [fallback], lambda: []))
+            self.assertEqual(resolved, fallback)
+
+    def test_studio_executable_reached_through_link_is_not_resolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            real = root / "Ulanzi Studio" / "UlanziDeck.exe"
+            real.parent.mkdir()
+            real.write_bytes(b"test executable")
+            linked = root / "UlanziDeck"
+            try:
+                if os.name == "nt":
+                    import _winapi
+                    _winapi.CreateJunction(str(real.parent), str(linked))
+                else:
+                    linked.symlink_to(real.parent, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory links are unavailable")
+            self.assertTrue((linked / "UlanziDeck.exe").is_file())
+            fallback = root / "Fallback" / "UlanziDeck.exe"
+            resolved = profile_assistant.resolve_studio_executable(
+                fallback, (lambda: [linked / "UlanziDeck.exe"],))
+            self.assertEqual(resolved, fallback)
+
+    def test_known_studio_candidates_prefer_current_install_folder(self):
+        environment = {"ProgramFiles(x86)": "C:\\PF86", "ProgramFiles": "C:\\PF"}
+        with patch.dict(profile_assistant.os.environ, environment, clear=True):
+            candidates = profile_assistant._known_studio_candidates()
+        self.assertEqual(candidates, [
+            Path("C:\\PF86") / "Ulanzi Studio" / "UlanziDeck.exe",
+            Path("C:\\PF86") / "UlanziDeck" / "UlanziDeck.exe",
+            Path("C:\\PF") / "Ulanzi Studio" / "UlanziDeck.exe",
+            Path("C:\\PF") / "UlanziDeck" / "UlanziDeck.exe",
+        ])
+
+    def test_production_roots_use_resolved_studio_executable(self):
+        environment = {"APPDATA": "C:\\Roaming", "LOCALAPPDATA": "C:\\Local",
+                       "ProgramFiles(x86)": "C:\\PF86"}
+        resolved = Path("D:\\Apps\\Ulanzi Studio\\UlanziDeck.exe")
+        with patch.dict(profile_assistant.os.environ, environment, clear=True), \
+                patch.object(profile_assistant, "resolve_studio_executable",
+                             return_value=resolved) as resolve:
+            roots = profile_assistant.production_roots()
+        self.assertEqual(roots.studio_executable, resolved)
+        self.assertEqual(resolve.call_args.args[0],
+                         Path("C:\\PF86") / "UlanziDeck" / "UlanziDeck.exe")
+
+    @unittest.skipUnless(os.name == "nt", "process image lookup is Windows-only")
+    def test_process_images_report_full_path_of_running_image(self):
+        images = profile_assistant._process_images(Path(sys.executable).name)
+        self.assertTrue(any(os.path.samefile(image, sys.executable) for image in images))
+        self.assertEqual(profile_assistant._process_images("no-such-image-name.exe"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

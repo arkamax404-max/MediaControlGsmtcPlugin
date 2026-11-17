@@ -45,6 +45,9 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_NO_WINDOW = 0x08000000
 MUTEX_NAME = "Local\\com.arkamax404.ulanzi.mediacontrol.ProfileAssistant"
 LAUNCH_CLAIM_STALE_SECONDS = 300.0
+STUDIO_IMAGE_NAME = "UlanziDeck.exe"
+# Current installers use "Ulanzi Studio"; the last entry is the legacy fallback folder.
+STUDIO_INSTALL_FOLDERS = ("Ulanzi Studio", "UlanziDeck")
 
 
 @dataclass(frozen=True)
@@ -72,9 +75,163 @@ def production_roots() -> ProductionRoots:
         base / "profile-assistant-state",
         Path(appdata) / "Ulanzi" / "UlanziDeck" / "ProfilesV2",
         executable.parent.parent / "manifest.json",
-        Path(program_files) / "UlanziDeck" / "UlanziDeck.exe",
+        resolve_studio_executable(
+            Path(program_files) / STUDIO_INSTALL_FOLDERS[-1] / STUDIO_IMAGE_NAME),
         base / "profile-assistant.key",
     )
+
+
+def _process_images(image_name: str) -> list[Path]:
+    """Return the full image paths of running processes with the exact image name."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", wintypes.WCHAR * 260)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    for name in ("Process32FirstW", "Process32NextW"):
+        getattr(kernel32, name).argtypes = (ctypes.c_void_p, ctypes.POINTER(ProcessEntry))
+        getattr(kernel32, name).restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        ctypes.c_void_p, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return []
+    images: list[Path] = []
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(ProcessEntry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.szExeFile.casefold() == image_name.casefold():
+                # PROCESS_QUERY_LIMITED_INFORMATION
+                process = kernel32.OpenProcess(0x1000, False, entry.th32ProcessID)
+                if process:
+                    try:
+                        size = wintypes.DWORD(32768)
+                        buffer = ctypes.create_unicode_buffer(size.value)
+                        if kernel32.QueryFullProcessImageNameW(
+                                process, 0, buffer, ctypes.byref(size)) and buffer.value:
+                            images.append(Path(buffer.value))
+                    finally:
+                        kernel32.CloseHandle(process)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return images
+
+
+def _registry_studio_candidates() -> list[Path]:
+    """Return Studio executables named by Windows uninstall registrations."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    uninstall = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    views = ((winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_32KEY),
+             (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_64KEY),
+             (winreg.HKEY_CURRENT_USER, 0))
+    candidates: list[Path] = []
+    for hive, view in views:
+        try:
+            root = winreg.OpenKey(hive, uninstall, 0, winreg.KEY_READ | view)
+        except OSError:
+            continue
+        with root:
+            index = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(root, index)
+                except OSError:
+                    break
+                index += 1
+                try:
+                    with winreg.OpenKey(root, name) as entry:
+                        values = {}
+                        for field in ("DisplayName", "InstallLocation", "DisplayIcon"):
+                            try:
+                                value, kind = winreg.QueryValueEx(entry, field)
+                            except OSError:
+                                continue
+                            if kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) and value:
+                                values[field] = str(value)
+                except OSError:
+                    continue
+                if "ulanzi" not in values.get("DisplayName", "").casefold():
+                    continue
+                location = values.get("InstallLocation", "").strip().strip('"')
+                if location:
+                    candidates.append(Path(location) / STUDIO_IMAGE_NAME)
+                icon = values.get("DisplayIcon", "").strip()
+                if icon:
+                    # "C:\path\UlanziDeck.exe",0 -> C:\path\UlanziDeck.exe
+                    head, separator, tail = icon.rpartition(",")
+                    if separator and tail.strip().lstrip("-").isdigit():
+                        icon = head
+                    candidates.append(Path(icon.strip().strip('"')))
+    return candidates
+
+
+def _known_studio_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    for variable in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
+        base = os.environ.get(variable)
+        if base:
+            candidates.extend(Path(base) / folder / STUDIO_IMAGE_NAME
+                              for folder in STUDIO_INSTALL_FOLDERS)
+    return candidates
+
+
+def _usable_studio_executable(path: Path) -> bool:
+    try:
+        if (not path.is_absolute() or any(part == ".." for part in path.parts)
+                or path.name.casefold() != STUDIO_IMAGE_NAME.casefold()):
+            return False
+        _safe_existing(path, False)
+        _safe_chain(path.parent)
+        return True
+    except (OSError, ValueError, ProfileAssistantError):
+        return False
+
+
+def resolve_studio_executable(
+        fallback: Path,
+        sources: Sequence[Callable[[], Sequence[Path]]] | None = None) -> Path:
+    """Locate the installed Studio executable instead of assuming its folder name.
+
+    The running Studio process is preferred, then Windows uninstall registrations,
+    then the known install folders. Each candidate must be a regular UlanziDeck.exe
+    reached without links or reparse points. ``fallback`` is returned when nothing
+    qualifies, so the later path validation reports the legacy location.
+    """
+    if sources is None:
+        sources = (lambda: _process_images(STUDIO_IMAGE_NAME),
+                   _registry_studio_candidates, _known_studio_candidates)
+    for source in sources:
+        try:
+            candidates = list(source())
+        except Exception:
+            continue
+        for candidate in candidates:
+            if _usable_studio_executable(candidate):
+                return candidate
+    return fallback
 
 
 class ProfileAssistantError(RuntimeError):
