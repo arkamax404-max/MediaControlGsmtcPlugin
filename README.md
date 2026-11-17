@@ -180,6 +180,11 @@ a complete backup, and only then atomically updates the identified center entry.
 and Repair require the built-in center action; Restore requires the exact managed Large
 Now Playing entry and restores the original entry from its authenticated backup lineage.
 
+The helper locates `UlanziDeck.exe` at runtime: the running Studio process first, then the
+Windows uninstall registration, then the `Ulanzi Studio` and legacy `UlanziDeck` folders
+under Program Files. The executable must be a regular file reached without links,
+junctions, or other reparse points.
+
 This operation changes Studio's live `ProfilesV2` data and is therefore not risk-free.
 Do not move, edit, or synchronize profile files while it runs. Keep the backup and state
 directories under `%LOCALAPPDATA%\GSMTCD200Controller`. If the status reports that manual
